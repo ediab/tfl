@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { Train, RefreshCw, Clock, MapPin, Search, Star, StarOff } from "lucide-react";
-import { PRESET_STATIONS, lineColour } from "@/lib/stations";
+import { Train, RefreshCw, Clock, MapPin, Plus, X } from "lucide-react";
+import { ALL_STATIONS, DEFAULT_STATION, lineColour } from "@/lib/stations";
 
 interface Arrival {
   id: string;
@@ -14,17 +14,13 @@ interface Arrival {
   towards: string;
 }
 
-interface StationResult {
-  naptanId: string;
-  commonName: string;
-}
-
 interface Station {
   id: string;
   name: string;
 }
 
 const STORAGE_KEY = "tfl:stations";
+const MAX_BOARDS = 4;
 
 function formatEta(seconds: number): string {
   if (seconds < 60) return "due";
@@ -40,9 +36,7 @@ function ArrivalsBoard({ stationId, stationName }: { stationId: string; stationN
 
   const fetchArrivals = useCallback(async () => {
     try {
-      const res = await fetch(
-        `https://api.tfl.gov.uk/StopPoint/${stationId}/Arrivals`
-      );
+      const res = await fetch(`https://api.tfl.gov.uk/StopPoint/${stationId}/Arrivals`);
       if (!res.ok) throw new Error(`TfL API error ${res.status}`);
       const data: Arrival[] = await res.json();
       const sorted = data
@@ -60,7 +54,7 @@ function ArrivalsBoard({ stationId, stationName }: { stationId: string; stationN
   }, [stationId]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial fetch on mount/stationId change
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchArrivals();
     const interval = setInterval(fetchArrivals, 30_000);
     return () => clearInterval(interval);
@@ -71,9 +65,7 @@ function ArrivalsBoard({ stationId, stationName }: { stationId: string; stationN
       <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-800">
         <div className="flex items-center gap-2">
           <MapPin size={14} className="text-neutral-500" />
-          <span className="text-sm font-mono text-neutral-300 truncate max-w-xs">
-            {stationName}
-          </span>
+          <span className="text-sm font-mono text-neutral-300 truncate max-w-xs">{stationName}</span>
         </div>
         {lastUpdated && (
           <span className="text-xs font-mono text-neutral-600">
@@ -143,80 +135,58 @@ function ArrivalsBoard({ stationId, stationName }: { stationId: string; stationN
 }
 
 export default function Home() {
-  const [selectedStations, setSelectedStations] = useState<Station[]>([PRESET_STATIONS[0]]);
-  const [hydrated, setHydrated] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<StationResult[]>([]);
-  const [searching, setSearching] = useState(false);
+  // null = not yet hydrated (avoids server/client HTML mismatch)
+  const [selectedStations, setSelectedStations] = useState<Station[] | null>(null);
+  const [pickedId, setPickedId] = useState(DEFAULT_STATION.id);
 
   useEffect(() => {
+    let initial: Station[] = [DEFAULT_STATION];
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw) as Station[];
         if (
           Array.isArray(parsed) &&
+          parsed.length > 0 &&
           parsed.every((s) => s && typeof s.id === "string" && typeof s.name === "string")
         ) {
-          // eslint-disable-next-line react-hooks/set-state-in-effect -- canonical SSR-safe hydration
-          setSelectedStations(parsed.slice(0, 4));
+          initial = parsed.slice(0, MAX_BOARDS);
         }
       }
     } catch {
       // ignore corrupt storage
     }
-    setHydrated(true);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSelectedStations(initial);
   }, []);
 
   useEffect(() => {
-    if (!hydrated) return;
+    if (selectedStations === null) return;
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(selectedStations));
     } catch {
-      // quota / private-mode — ignore
+      // quota / private-mode
     }
-  }, [selectedStations, hydrated]);
+  }, [selectedStations]);
 
-  const searchStation = useCallback(async (q: string, exclude: Station[]) => {
-    if (q.trim().length < 3) {
-      setSearchResults([]);
-      return;
-    }
-    setSearching(true);
-    try {
-      const res = await fetch(
-        `https://api.tfl.gov.uk/StopPoint/Search/${encodeURIComponent(q)}?modes=tube,dlr,overground,elizabeth-line&maxResults=6`
-      );
-      if (!res.ok) throw new Error("Search failed");
-      const data = await res.json();
-      setSearchResults(
-        (data.matches ?? []).filter(
-          (s: StationResult) => !exclude.some((sel) => sel.id === s.naptanId)
-        )
-      );
-    } catch {
-      setSearchResults([]);
-    } finally {
-      setSearching(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    const t = setTimeout(() => searchStation(searchQuery, selectedStations), 400);
-    return () => clearTimeout(t);
-  }, [searchQuery, selectedStations, searchStation]);
-
-  function addStation(station: Station) {
-    if (selectedStations.length >= 4) return;
-    if (selectedStations.some((s) => s.id === station.id)) return;
-    setSelectedStations((prev) => [...prev, station]);
-    setSearchQuery("");
-    setSearchResults([]);
+  function addStation() {
+    const station = ALL_STATIONS.find((s) => s.id === pickedId);
+    if (!station) return;
+    setSelectedStations((prev) => {
+      if (!prev) return [station];
+      if (prev.length >= MAX_BOARDS) return prev;
+      if (prev.some((s) => s.id === station.id)) return prev;
+      return [...prev, station];
+    });
   }
 
   function removeStation(id: string) {
-    setSelectedStations((prev) => prev.filter((s) => s.id !== id));
+    setSelectedStations((prev) => prev?.filter((s) => s.id !== id) ?? []);
   }
+
+  const stations = selectedStations ?? [];
+  const atMax = stations.length >= MAX_BOARDS;
+  const alreadyAdded = stations.some((s) => s.id === pickedId);
 
   return (
     <main className="min-h-screen bg-neutral-950 text-neutral-100 p-4 md:p-8">
@@ -230,69 +200,51 @@ export default function Home() {
           </span>
         </div>
 
-        <div className="relative mb-4">
-          <div className="flex items-center border border-neutral-800 bg-neutral-900 px-3 gap-2">
-            <Search size={13} className="text-neutral-600 shrink-0" />
-            <input
-              type="text"
-              placeholder="Add a station…"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="flex-1 bg-transparent py-2.5 text-sm font-mono text-neutral-300 placeholder-neutral-700 outline-none"
-              disabled={selectedStations.length >= 4}
-            />
-            {searching && (
-              <RefreshCw size={12} className="animate-spin text-neutral-700 shrink-0" />
-            )}
-          </div>
-
-          {searchResults.length > 0 && (
-            <div className="absolute left-0 right-0 z-10 border border-t-0 border-neutral-800 bg-neutral-900">
-              {searchResults.map((result) => (
-                <button
-                  key={result.naptanId}
-                  onClick={() => addStation({ id: result.naptanId, name: result.commonName })}
-                  className="w-full text-left px-4 py-2.5 text-sm font-mono text-neutral-300 hover:bg-neutral-800 border-b border-neutral-800 last:border-0"
-                >
-                  {result.commonName}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="flex flex-wrap gap-2 mb-6">
-          {PRESET_STATIONS.filter((s) => !selectedStations.some((sel) => sel.id === s.id)).map(
-            (s) => (
-              <button
-                key={s.id}
-                onClick={() => addStation(s)}
-                disabled={selectedStations.length >= 4}
-                className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-mono border border-neutral-800 text-neutral-600 hover:border-neutral-600 hover:text-neutral-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-              >
-                <Star size={9} />
+        <div className="flex gap-2 mb-6">
+          <select
+            value={pickedId}
+            onChange={(e) => setPickedId(e.target.value)}
+            className="flex-1 bg-neutral-900 border border-neutral-800 text-sm font-mono text-neutral-300 px-3 py-2.5 outline-none appearance-none cursor-pointer hover:border-neutral-700 focus:border-neutral-600 transition-colors"
+          >
+            {ALL_STATIONS.map((s) => (
+              <option key={s.id} value={s.id}>
                 {s.name}
-              </button>
-            )
-          )}
+              </option>
+            ))}
+          </select>
+          <button
+            onClick={addStation}
+            disabled={atMax || alreadyAdded}
+            className="flex items-center gap-1.5 px-4 py-2.5 text-sm font-mono border border-neutral-800 text-neutral-400 hover:border-neutral-600 hover:text-neutral-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+          >
+            <Plus size={14} />
+            Add
+          </button>
         </div>
 
-        <div className="space-y-4">
-          {selectedStations.map((station) => (
-            <div key={station.id}>
-              <div className="flex justify-end mb-1">
-                <button
-                  onClick={() => removeStation(station.id)}
-                  className="flex items-center gap-1 text-xs font-mono text-neutral-700 hover:text-neutral-500 transition-colors"
-                >
-                  <StarOff size={10} />
-                  remove
-                </button>
+        {selectedStations === null ? (
+          <div className="flex items-center justify-center py-16 gap-2 text-neutral-700">
+            <RefreshCw size={14} className="animate-spin" />
+            <span className="text-xs font-mono">Loading…</span>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {stations.map((station) => (
+              <div key={station.id}>
+                <div className="flex justify-end mb-1">
+                  <button
+                    onClick={() => removeStation(station.id)}
+                    className="flex items-center gap-1 text-xs font-mono text-neutral-700 hover:text-neutral-500 transition-colors"
+                  >
+                    <X size={10} />
+                    remove
+                  </button>
+                </div>
+                <ArrivalsBoard key={station.id} stationId={station.id} stationName={station.name} />
               </div>
-              <ArrivalsBoard key={station.id} stationId={station.id} stationName={station.name} />
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
 
         <p className="mt-8 text-center text-xs font-mono text-neutral-800">
           data © tfl.gov.uk · open government licence
