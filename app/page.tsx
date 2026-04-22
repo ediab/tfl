@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
-import { Train, RefreshCw, Clock, MapPin, Plus, X } from "lucide-react";
+import { useEffect, useState, useCallback, useRef } from "react";
+import { Train, RefreshCw, Clock, MapPin, ChevronDown } from "lucide-react";
 import { ALL_STATIONS, DEFAULT_STATION, lineColour } from "@/lib/stations";
 
 interface Arrival {
@@ -19,13 +19,64 @@ interface Station {
   name: string;
 }
 
+interface DirectionGroup {
+  label: string;
+  arrivals: Arrival[];
+}
+
+interface LineGroup {
+  lineId: string;
+  lineName: string;
+  directions: DirectionGroup[];
+}
+
 const STORAGE_KEY = "tfl:stations";
-const MAX_BOARDS = 4;
+const MAX_PER_DIRECTION = 5;
+const DIR_ORDER = ["Northbound", "Southbound", "Eastbound", "Westbound", "Inner Rail", "Outer Rail"];
 
 function formatEta(seconds: number): string {
   if (seconds < 60) return "due";
   const mins = Math.floor(seconds / 60);
   return `${mins} min${mins !== 1 ? "s" : ""}`;
+}
+
+function extractDirection(platformName: string): string {
+  // "Northbound - Platform 1" → "Northbound"
+  const dash = platformName.indexOf(" - ");
+  if (dash > 0) return platformName.slice(0, dash);
+  // Fallback: scan for known direction keywords
+  for (const d of DIR_ORDER) {
+    if (platformName.toLowerCase().includes(d.toLowerCase())) return d;
+  }
+  return platformName;
+}
+
+function groupArrivals(arrivals: Arrival[]): LineGroup[] {
+  const lineMap = new Map<string, { lineName: string; dirMap: Map<string, Arrival[]> }>();
+  for (const a of arrivals) {
+    if (!lineMap.has(a.lineId)) lineMap.set(a.lineId, { lineName: a.lineName, dirMap: new Map() });
+    const dir = extractDirection(a.platformName);
+    const { dirMap } = lineMap.get(a.lineId)!;
+    if (!dirMap.has(dir)) dirMap.set(dir, []);
+    dirMap.get(dir)!.push(a);
+  }
+  return [...lineMap.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([lineId, { lineName, dirMap }]) => ({
+      lineId,
+      lineName,
+      directions: [...dirMap.entries()]
+        .sort(([a], [b]) => {
+          const ai = DIR_ORDER.indexOf(a);
+          const bi = DIR_ORDER.indexOf(b);
+          return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+        })
+        .map(([label, grpArrivals]) => ({
+          label,
+          // arrivals already sorted by timeToStation from fetch
+          arrivals: grpArrivals.slice(0, MAX_PER_DIRECTION),
+        })),
+    }));
 }
 
 function ArrivalsBoard({ stationId, stationName }: { stationId: string; stationName: string }) {
@@ -39,11 +90,9 @@ function ArrivalsBoard({ stationId, stationName }: { stationId: string; stationN
       const res = await fetch(`https://api.tfl.gov.uk/StopPoint/${stationId}/Arrivals`);
       if (!res.ok) throw new Error(`TfL API error ${res.status}`);
       const data: Arrival[] = await res.json();
-      const sorted = data
-        .filter((a) => a.timeToStation >= 0)
-        .sort((a, b) => a.timeToStation - b.timeToStation)
-        .slice(0, 12);
-      setArrivals(sorted);
+      setArrivals(
+        data.filter((a) => a.timeToStation >= 0).sort((a, b) => a.timeToStation - b.timeToStation)
+      );
       setLastUpdated(new Date());
       setError(null);
     } catch (e) {
@@ -60,8 +109,11 @@ function ArrivalsBoard({ stationId, stationName }: { stationId: string; stationN
     return () => clearInterval(interval);
   }, [fetchArrivals]);
 
+  const groups = groupArrivals(arrivals);
+
   return (
     <div className="border border-neutral-800 bg-neutral-900 overflow-hidden">
+      {/* Station header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-800">
         <div className="flex items-center gap-2">
           <MapPin size={14} className="text-neutral-500" />
@@ -95,62 +147,77 @@ function ArrivalsBoard({ stationId, stationName }: { stationId: string; stationN
         </div>
       )}
 
-      {!loading && arrivals.length > 0 && (
-        <ul>
-          {arrivals.map((arrival, i) => (
-            <li
-              key={arrival.id}
-              className={`flex items-center gap-3 px-4 py-2.5 ${
-                i !== arrivals.length - 1 ? "border-b border-neutral-800" : ""
-              }`}
-            >
-              <span
-                className="w-1.5 h-8 shrink-0"
-                style={{ backgroundColor: lineColour(arrival.lineId) }}
-              />
-              <div className="flex-1 min-w-0">
-                <div className="flex items-baseline gap-2">
-                  <span className="text-xs font-mono text-neutral-500 uppercase tracking-wide">
-                    {arrival.lineName}
-                  </span>
-                  <span className="text-sm text-neutral-200 truncate">
-                    {arrival.towards || arrival.destinationName}
-                  </span>
-                </div>
-                <span className="text-xs font-mono text-neutral-600">{arrival.platformName}</span>
-              </div>
-              <span
-                className={`text-sm font-mono tabular-nums shrink-0 ${
-                  arrival.timeToStation < 60 ? "text-amber-400" : "text-neutral-300"
-                }`}
+      {!loading && groups.length > 0 && (
+        <div>
+          {groups.map((line, li) => (
+            <div key={line.lineId} className={li > 0 ? "border-t border-neutral-700" : ""}>
+              {/* Line header */}
+              <div
+                className="flex items-center gap-2.5 px-4 py-2.5"
+                style={{ borderLeft: `3px solid ${lineColour(line.lineId)}` }}
               >
-                {formatEta(arrival.timeToStation)}
-              </span>
-            </li>
+                <span className="text-xs font-mono uppercase tracking-widest text-neutral-400">
+                  {line.lineName}
+                </span>
+              </div>
+
+              {/* Direction sections */}
+              {line.directions.map((dir) => (
+                <div key={dir.label}>
+                  <div className="px-4 py-1 text-xs font-mono text-neutral-600 bg-neutral-950/60 border-y border-neutral-800/60">
+                    {dir.label}
+                  </div>
+                  <ul>
+                    {dir.arrivals.map((a, i) => (
+                      <li
+                        key={a.id}
+                        className={`flex items-center gap-3 px-4 py-2.5 ${
+                          i !== dir.arrivals.length - 1 ? "border-b border-neutral-800/50" : ""
+                        }`}
+                      >
+                        <div className="flex-1 min-w-0">
+                          <span className="text-sm text-neutral-200 truncate block">
+                            {a.towards || a.destinationName}
+                          </span>
+                        </div>
+                        <span
+                          className={`text-sm font-mono tabular-nums shrink-0 ${
+                            a.timeToStation < 60 ? "text-amber-400" : "text-neutral-300"
+                          }`}
+                        >
+                          {formatEta(a.timeToStation)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
           ))}
-        </ul>
+        </div>
       )}
     </div>
   );
 }
 
 export default function Home() {
-  const [selectedStations, setSelectedStations] = useState<Station[]>([DEFAULT_STATION]);
+  const [station, setStation] = useState<Station>(DEFAULT_STATION);
   const [hydrated, setHydrated] = useState(false);
-  const [pickedId, setPickedId] = useState(DEFAULT_STATION.id);
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const comboRef = useRef<HTMLDivElement>(null);
 
+  // Restore from localStorage on mount
   useEffect(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
-        const parsed = JSON.parse(raw) as Station[];
-        if (
-          Array.isArray(parsed) &&
-          parsed.length > 0 &&
-          parsed.every((s) => s && typeof s.id === "string" && typeof s.name === "string")
-        ) {
+        const parsed = JSON.parse(raw);
+        // Handle both legacy array format and new single-station format
+        const candidate = Array.isArray(parsed) ? parsed[0] : parsed;
+        if (candidate?.id && typeof candidate.id === "string" && candidate?.name) {
           // eslint-disable-next-line react-hooks/set-state-in-effect
-          setSelectedStations(parsed.slice(0, MAX_BOARDS));
+          setStation(candidate as Station);
         }
       }
     } catch {
@@ -163,28 +230,33 @@ export default function Home() {
   useEffect(() => {
     if (!hydrated) return;
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(selectedStations));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(station));
     } catch {
       // quota / private-mode
     }
-  }, [selectedStations, hydrated]);
+  }, [station, hydrated]);
 
-  function addStation() {
-    const station = ALL_STATIONS.find((s) => s.id === pickedId);
-    if (!station) return;
-    setSelectedStations((prev) => {
-      if (prev.length >= MAX_BOARDS) return prev;
-      if (prev.some((s) => s.id === station.id)) return prev;
-      return [...prev, station];
-    });
+  // Close dropdown on outside click
+  useEffect(() => {
+    function onMouseDown(e: MouseEvent) {
+      if (comboRef.current && !comboRef.current.contains(e.target as Node)) {
+        setOpen(false);
+        setQuery("");
+      }
+    }
+    document.addEventListener("mousedown", onMouseDown);
+    return () => document.removeEventListener("mousedown", onMouseDown);
+  }, []);
+
+  const filtered = query.trim()
+    ? ALL_STATIONS.filter((s) => s.name.toLowerCase().includes(query.toLowerCase()))
+    : ALL_STATIONS;
+
+  function selectStation(s: Station) {
+    setStation(s);
+    setQuery("");
+    setOpen(false);
   }
-
-  function removeStation(id: string) {
-    setSelectedStations((prev) => prev.filter((s) => s.id !== id));
-  }
-
-  const atMax = selectedStations.length >= MAX_BOARDS;
-  const alreadyAdded = selectedStations.some((s) => s.id === pickedId);
 
   return (
     <main className="min-h-screen bg-neutral-950 text-neutral-100 p-4 md:p-8">
@@ -198,44 +270,66 @@ export default function Home() {
           </span>
         </div>
 
-        <div className="flex gap-2 mb-6">
-          <select
-            value={pickedId}
-            onChange={(e) => setPickedId(e.target.value)}
-            className="flex-1 bg-neutral-900 border border-neutral-800 text-sm font-mono text-neutral-300 px-3 py-2.5 outline-none appearance-none cursor-pointer hover:border-neutral-700 focus:border-neutral-600 transition-colors"
-          >
-            {ALL_STATIONS.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
-          </select>
+        {/* Station picker */}
+        <div className="relative mb-6" ref={comboRef}>
           <button
-            onClick={addStation}
-            disabled={atMax || alreadyAdded}
-            className="flex items-center gap-1.5 px-4 py-2.5 text-sm font-mono border border-neutral-800 text-neutral-400 hover:border-neutral-600 hover:text-neutral-200 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            onClick={() => { setOpen((o) => !o); setQuery(""); }}
+            className="w-full flex items-center gap-2 px-3 py-2.5 bg-neutral-900 border border-neutral-800 hover:border-neutral-700 focus:border-neutral-600 transition-colors text-left"
           >
-            <Plus size={14} />
-            Add
+            <MapPin size={13} className="text-neutral-600 shrink-0" />
+            <span className="flex-1 text-sm font-mono text-neutral-300 truncate">{station.name}</span>
+            <ChevronDown
+              size={13}
+              className={`text-neutral-600 shrink-0 transition-transform ${open ? "rotate-180" : ""}`}
+            />
           </button>
+
+          {open && (
+            <div className="absolute left-0 right-0 z-20 border border-t-0 border-neutral-800 bg-neutral-900 shadow-lg">
+              {/* Search input inside the dropdown */}
+              <div className="flex items-center gap-2 px-3 border-b border-neutral-800">
+                <span className="text-xs font-mono text-neutral-700">search</span>
+                <input
+                  autoFocus
+                  type="text"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="type to filter…"
+                  className="flex-1 bg-transparent py-2 text-sm font-mono text-neutral-300 placeholder-neutral-700 outline-none"
+                />
+                {query && (
+                  <button
+                    onClick={() => setQuery("")}
+                    className="text-neutral-700 hover:text-neutral-500 text-xs font-mono"
+                  >
+                    clear
+                  </button>
+                )}
+              </div>
+              <ul className="max-h-60 overflow-y-auto">
+                {filtered.map((s) => (
+                  <li key={s.id}>
+                    <button
+                      onClick={() => selectStation(s)}
+                      className={`w-full text-left px-4 py-2.5 text-sm font-mono border-b border-neutral-800/60 last:border-0 transition-colors ${
+                        s.id === station.id
+                          ? "text-neutral-100 bg-neutral-800"
+                          : "text-neutral-400 hover:bg-neutral-800/60 hover:text-neutral-200"
+                      }`}
+                    >
+                      {s.name}
+                    </button>
+                  </li>
+                ))}
+                {filtered.length === 0 && (
+                  <li className="px-4 py-3 text-xs font-mono text-neutral-700">No stations found.</li>
+                )}
+              </ul>
+            </div>
+          )}
         </div>
 
-        <div className="space-y-4">
-          {selectedStations.map((station) => (
-            <div key={station.id}>
-              <div className="flex justify-end mb-1">
-                <button
-                  onClick={() => removeStation(station.id)}
-                  className="flex items-center gap-1 text-xs font-mono text-neutral-700 hover:text-neutral-500 transition-colors"
-                >
-                  <X size={10} />
-                  remove
-                </button>
-              </div>
-              <ArrivalsBoard key={station.id} stationId={station.id} stationName={station.name} />
-            </div>
-          ))}
-        </div>
+        <ArrivalsBoard key={station.id} stationId={station.id} stationName={station.name} />
 
         <p className="mt-8 text-center text-xs font-mono text-neutral-800">
           data © tfl.gov.uk · open government licence
