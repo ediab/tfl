@@ -135,12 +135,11 @@ function ArrivalsBoard({ stationId, stationName }: { stationId: string; stationN
 }
 
 export default function Home() {
-  // null = not yet hydrated (avoids server/client HTML mismatch)
-  const [selectedStations, setSelectedStations] = useState<Station[] | null>(null);
+  const [selectedStations, setSelectedStations] = useState<Station[]>([DEFAULT_STATION]);
+  const [hydrated, setHydrated] = useState(false);
   const [pickedId, setPickedId] = useState(DEFAULT_STATION.id);
 
   useEffect(() => {
-    let initial: Station[] = [DEFAULT_STATION];
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
@@ -150,30 +149,30 @@ export default function Home() {
           parsed.length > 0 &&
           parsed.every((s) => s && typeof s.id === "string" && typeof s.name === "string")
         ) {
-          initial = parsed.slice(0, MAX_BOARDS);
+          // eslint-disable-next-line react-hooks/set-state-in-effect
+          setSelectedStations(parsed.slice(0, MAX_BOARDS));
         }
       }
     } catch {
       // ignore corrupt storage
     }
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setSelectedStations(initial);
+     
+    setHydrated(true);
   }, []);
 
   useEffect(() => {
-    if (selectedStations === null) return;
+    if (!hydrated) return;
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(selectedStations));
     } catch {
       // quota / private-mode
     }
-  }, [selectedStations]);
+  }, [selectedStations, hydrated]);
 
   function addStation() {
     const station = ALL_STATIONS.find((s) => s.id === pickedId);
     if (!station) return;
     setSelectedStations((prev) => {
-      if (!prev) return [station];
       if (prev.length >= MAX_BOARDS) return prev;
       if (prev.some((s) => s.id === station.id)) return prev;
       return [...prev, station];
@@ -181,12 +180,11 @@ export default function Home() {
   }
 
   function removeStation(id: string) {
-    setSelectedStations((prev) => prev?.filter((s) => s.id !== id) ?? []);
+    setSelectedStations((prev) => prev.filter((s) => s.id !== id));
   }
 
-  const stations = selectedStations ?? [];
-  const atMax = stations.length >= MAX_BOARDS;
-  const alreadyAdded = stations.some((s) => s.id === pickedId);
+  const atMax = selectedStations.length >= MAX_BOARDS;
+  const alreadyAdded = selectedStations.some((s) => s.id === pickedId);
 
   return (
     <main className="min-h-screen bg-neutral-950 text-neutral-100 p-4 md:p-8">
@@ -222,29 +220,22 @@ export default function Home() {
           </button>
         </div>
 
-        {selectedStations === null ? (
-          <div className="flex items-center justify-center py-16 gap-2 text-neutral-700">
-            <RefreshCw size={14} className="animate-spin" />
-            <span className="text-xs font-mono">Loading…</span>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {stations.map((station) => (
-              <div key={station.id}>
-                <div className="flex justify-end mb-1">
-                  <button
-                    onClick={() => removeStation(station.id)}
-                    className="flex items-center gap-1 text-xs font-mono text-neutral-700 hover:text-neutral-500 transition-colors"
-                  >
-                    <X size={10} />
-                    remove
-                  </button>
-                </div>
-                <ArrivalsBoard key={station.id} stationId={station.id} stationName={station.name} />
+        <div className="space-y-4">
+          {selectedStations.map((station) => (
+            <div key={station.id}>
+              <div className="flex justify-end mb-1">
+                <button
+                  onClick={() => removeStation(station.id)}
+                  className="flex items-center gap-1 text-xs font-mono text-neutral-700 hover:text-neutral-500 transition-colors"
+                >
+                  <X size={10} />
+                  remove
+                </button>
               </div>
-            ))}
-          </div>
-        )}
+              <ArrivalsBoard key={station.id} stationId={station.id} stationName={station.name} />
+            </div>
+          ))}
+        </div>
 
         <p className="mt-8 text-center text-xs font-mono text-neutral-800">
           data © tfl.gov.uk · open government licence
