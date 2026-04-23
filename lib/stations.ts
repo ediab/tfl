@@ -15,8 +15,28 @@ export const LINE_COLOURS: Record<string, string> = {
   dlr: "#00A4A7",
 };
 
-export function lineColour(lineId: string): string {
-  return LINE_COLOURS[lineId.toLowerCase()] ?? "#6b7280";
+// Lightened variants for display on dark backgrounds
+const DARK_LINE_COLOURS: Record<string, string> = {
+  bakerloo: "#D4891A",
+  central: "#FF4438",
+  circle: "#FFD300",
+  district: "#00A83C",
+  "hammersmith-city": "#F7BFD0",
+  jubilee: "#C4C8CC",
+  metropolitan: "#D4007A",
+  northern: "#D8D8D8",
+  piccadilly: "#4D8EFF",
+  victoria: "#00BCEE",
+  "waterloo-city": "#AADEC8",
+  elizabeth: "#9B78E0",
+  overground: "#EE7C0E",
+  dlr: "#00C8CC",
+};
+
+export function lineColour(lineId: string, dark = false): string {
+  const id = lineId.toLowerCase();
+  if (dark) return DARK_LINE_COLOURS[id] ?? LINE_COLOURS[id] ?? "#9ca3af";
+  return LINE_COLOURS[id] ?? "#6b7280";
 }
 
 export interface Station {
