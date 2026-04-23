@@ -178,8 +178,11 @@ function ArrivalsBoard({ stationId, stationName }: { stationId: string; stationN
 
               {line.directions.map((dir) => (
                 <div key={dir.label}>
-                  <div className="px-4 py-1 border-t border-neutral-200/50 dark:border-neutral-800/50">
-                    <span className="text-[9px] font-mono text-neutral-500 dark:text-neutral-200 uppercase tracking-[0.14em]">
+                  <div
+                    className="px-4 py-1.5 border-t border-neutral-200/50 dark:border-neutral-800/50 bg-neutral-50 dark:bg-neutral-900/70"
+                    style={{ borderLeft: `3px solid ${lineColour(line.lineId)}` }}
+                  >
+                    <span className="text-[9px] font-mono text-neutral-600 dark:text-neutral-300 uppercase tracking-[0.14em]">
                       {dir.label}
                     </span>
                   </div>
