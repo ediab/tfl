@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Train, RefreshCw, MapPin, ChevronDown } from "lucide-react";
 import { ALL_STATIONS, lineColour, type Station } from "@/lib/stations";
+import { getNearestStations, isWithinLondonCatchment } from "@/lib/nearest-stations";
 
 interface Arrival {
   id: string;
@@ -34,11 +35,12 @@ const DIR_ORDER = [
   "Inner Rail",
   "Outer Rail",
 ];
+const LISTBOX_ID = "station-listbox";
+const LS_KEY = "tfl:station";
 
 function formatEta(seconds: number): string {
   if (seconds < 60) return "due";
-  const mins = Math.floor(seconds / 60);
-  return `${mins} min`;
+  return `${Math.floor(seconds / 60)} min`;
 }
 
 function extractDirection(platformName: string): string {
@@ -84,14 +86,15 @@ function ArrivalsBoard({ stationId, stationName }: { stationId: string; stationN
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchArrivals = useCallback(async () => {
     try {
-      const res = await fetch(`https://api.tfl.gov.uk/StopPoint/${stationId}/Arrivals`);
+      const res = await fetch(`/api/arrivals/${stationId}`);
       if (!res.ok) throw new Error(`TfL API error ${res.status}`);
       const data: Arrival[] = await res.json();
       setArrivals(
-        data.filter((a) => a.timeToStation >= 0).sort((a, b) => a.timeToStation - b.timeToStation)
+        data.filter((a) => a.timeToStation >= 0).sort((a, b) => a.timeToStation - b.timeToStation),
       );
       setLastUpdated(new Date());
       setError(null);
@@ -103,13 +106,26 @@ function ArrivalsBoard({ stationId, stationName }: { stationId: string; stationN
   }, [stationId]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchArrivals();
-    const interval = setInterval(fetchArrivals, 30_000);
-    return () => clearInterval(interval);
+    intervalRef.current = setInterval(fetchArrivals, 30_000);
+
+    function handleVisibility() {
+      if (document.hidden) {
+        if (intervalRef.current) clearInterval(intervalRef.current);
+      } else {
+        fetchArrivals();
+        intervalRef.current = setInterval(fetchArrivals, 30_000);
+      }
+    }
+    document.addEventListener("visibilitychange", handleVisibility);
+
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
   }, [fetchArrivals]);
 
-  const groups = groupArrivals(arrivals);
+  const groups = useMemo(() => groupArrivals(arrivals), [arrivals]);
 
   return (
     <div className="border border-neutral-800 overflow-hidden">
@@ -206,35 +222,115 @@ function ArrivalsBoard({ stationId, stationName }: { stationId: string; stationN
 
 export default function HomeClient({
   initialStation,
-  suggestedStations,
+  suggestedStations: initialSuggestedStations,
 }: {
   initialStation: Station;
   suggestedStations: Station[];
 }) {
   const [station, setStation] = useState<Station>(initialStation);
+  const [suggestedStations, setSuggestedStations] = useState<Station[]>(initialSuggestedStations);
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
   const comboRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
+  const userSelected = useRef(false);
 
+  // Restore last selected station from localStorage
   useEffect(() => {
-    function onMouseDown(e: MouseEvent) {
+    try {
+      const saved = localStorage.getItem(LS_KEY);
+      if (saved && !userSelected.current) {
+        const found = ALL_STATIONS.find((s) => s.id === saved);
+        if (found) setStation(found);
+      }
+    } catch {}
+  }, []);
+
+  // Persist selected station
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_KEY, station.id);
+    } catch {}
+  }, [station]);
+
+  // Client-side geolocation (overrides localStorage if user hasn't manually picked)
+  useEffect(() => {
+    if (!navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        if (userSelected.current) return;
+        const coords = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+        if (!isWithinLondonCatchment(coords)) return;
+        const nearest = getNearestStations(coords, 4);
+        setStation(nearest[0]);
+        setSuggestedStations(nearest.slice(1));
+      },
+      undefined,
+      { timeout: 8000, maximumAge: 60_000 },
+    );
+  }, []);
+
+  // Close dropdown on outside click/touch
+  useEffect(() => {
+    function onPointerDown(e: PointerEvent) {
       if (comboRef.current && !comboRef.current.contains(e.target as Node)) {
         setOpen(false);
         setQuery("");
       }
     }
-    document.addEventListener("mousedown", onMouseDown);
-    return () => document.removeEventListener("mousedown", onMouseDown);
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
   }, []);
 
-  const filtered = query.trim()
-    ? ALL_STATIONS.filter((s) => s.name.toLowerCase().includes(query.toLowerCase()))
-    : ALL_STATIONS;
+  // Reset keyboard cursor when query changes or dropdown closes
+  useEffect(() => setActiveIndex(-1), [query]);
+  useEffect(() => {
+    if (!open) setActiveIndex(-1);
+  }, [open]);
 
-  function selectStation(nextStation: Station) {
-    setStation(nextStation);
+  // Scroll highlighted option into view
+  useEffect(() => {
+    if (activeIndex >= 0 && listRef.current) {
+      (listRef.current.children[activeIndex] as HTMLElement)?.scrollIntoView({ block: "nearest" });
+    }
+  }, [activeIndex]);
+
+  const filtered = useMemo(
+    () =>
+      query.trim()
+        ? ALL_STATIONS.filter((s) => s.name.toLowerCase().includes(query.toLowerCase()))
+        : ALL_STATIONS,
+    [query],
+  );
+
+  function selectStation(next: Station) {
+    userSelected.current = true;
+    setStation(next);
     setQuery("");
     setOpen(false);
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    switch (e.key) {
+      case "ArrowDown":
+        e.preventDefault();
+        setActiveIndex((i) => Math.min(i + 1, filtered.length - 1));
+        break;
+      case "ArrowUp":
+        e.preventDefault();
+        setActiveIndex((i) => Math.max(i - 1, 0));
+        break;
+      case "Enter":
+        e.preventDefault();
+        if (activeIndex >= 0 && filtered[activeIndex]) selectStation(filtered[activeIndex]);
+        break;
+      case "Escape":
+        e.preventDefault();
+        setOpen(false);
+        setQuery("");
+        break;
+    }
   }
 
   return (
@@ -257,13 +353,18 @@ export default function HomeClient({
         <div className="relative mb-3" ref={comboRef}>
           <button
             onClick={() => {
-              setOpen((wasOpen) => !wasOpen);
+              setOpen((was) => !was);
               setQuery("");
             }}
+            aria-haspopup="listbox"
+            aria-expanded={open}
+            aria-controls={LISTBOX_ID}
             className="w-full flex items-center gap-2.5 px-3.5 py-2.5 bg-neutral-900 border border-neutral-800 hover:border-neutral-700 transition-colors text-left"
           >
             <MapPin size={12} className="text-neutral-700 shrink-0" />
-            <span className="flex-1 text-sm font-mono text-neutral-300 truncate">{station.name}</span>
+            <span className="flex-1 text-sm font-mono text-neutral-300 truncate">
+              {station.name}
+            </span>
             <ChevronDown
               size={12}
               className={`text-neutral-700 shrink-0 transition-transform duration-150 ${
@@ -280,9 +381,19 @@ export default function HomeClient({
                 </span>
                 <input
                   autoFocus
+                  role="combobox"
+                  aria-autocomplete="list"
+                  aria-expanded={open}
+                  aria-controls={LISTBOX_ID}
+                  aria-activedescendant={
+                    activeIndex >= 0
+                      ? `station-option-${filtered[activeIndex]?.id}`
+                      : undefined
+                  }
                   type="text"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
+                  onKeyDown={handleKeyDown}
                   placeholder="type to filter…"
                   className="flex-1 bg-transparent py-2.5 font-mono text-neutral-300 placeholder-neutral-800 outline-none"
                   style={{ fontSize: "16px" }}
@@ -296,15 +407,26 @@ export default function HomeClient({
                   </button>
                 )}
               </div>
-              <ul className="max-h-60 overflow-y-auto">
-                {filtered.map((s) => (
-                  <li key={s.id}>
+              <ul
+                ref={listRef}
+                id={LISTBOX_ID}
+                role="listbox"
+                aria-label="Stations"
+                className="max-h-60 overflow-y-auto"
+              >
+                {filtered.map((s, i) => (
+                  <li key={s.id} role="presentation">
                     <button
+                      id={`station-option-${s.id}`}
+                      role="option"
+                      aria-selected={s.id === station.id}
                       onClick={() => selectStation(s)}
                       className={`w-full text-left px-3.5 py-3 text-sm font-mono border-b border-neutral-800/40 last:border-0 transition-colors min-h-[44px] flex items-center ${
-                        s.id === station.id
-                          ? "text-neutral-100 bg-neutral-800"
-                          : "text-neutral-500 hover:bg-neutral-800/50 hover:text-neutral-200"
+                        i === activeIndex
+                          ? "bg-neutral-700/60 text-neutral-100"
+                          : s.id === station.id
+                            ? "text-neutral-100 bg-neutral-800"
+                            : "text-neutral-500 hover:bg-neutral-800/50 hover:text-neutral-200"
                       }`}
                     >
                       {s.name}
@@ -326,17 +448,17 @@ export default function HomeClient({
             <span className="text-[10px] font-mono text-neutral-700 uppercase tracking-[0.18em]">
               nearby
             </span>
-            {suggestedStations.map((suggestedStation) => (
+            {suggestedStations.map((s) => (
               <button
-                key={suggestedStation.id}
-                onClick={() => selectStation(suggestedStation)}
+                key={s.id}
+                onClick={() => selectStation(s)}
                 className={`px-2.5 py-1.5 border text-xs font-mono transition-colors ${
-                  suggestedStation.id === station.id
+                  s.id === station.id
                     ? "border-neutral-500 bg-neutral-800 text-neutral-100"
                     : "border-neutral-800 bg-neutral-900 text-neutral-500 hover:border-neutral-700 hover:text-neutral-200"
                 }`}
               >
-                {suggestedStation.name}
+                {s.name}
               </button>
             ))}
           </div>
