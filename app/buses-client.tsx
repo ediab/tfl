@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bus, RefreshCw, MapPin } from "lucide-react";
 
 interface BusStop {
@@ -16,7 +16,6 @@ interface BusArrival {
   lineName: string;
   lineId: string;
   destinationName: string;
-  towards: string;
   timeToStation: number;
 }
 
@@ -94,7 +93,7 @@ function BusArrivalsBoard({ stop }: { stop: BusStop }) {
     };
   }, [fetchArrivals]);
 
-  const groups = groupByRoute(arrivals);
+  const groups = useMemo(() => groupByRoute(arrivals), [arrivals]);
   const stopLabel = stop.name + (stop.indicator ? ` · ${stop.indicator}` : "");
 
   return (
@@ -160,7 +159,7 @@ function BusArrivalsBoard({ stop }: { stop: BusStop }) {
                       style={{ opacity: ROW_OPACITY[i] ?? 0.25 }}
                     >
                       <span className="flex-1 min-w-0 text-sm font-mono text-neutral-900 dark:text-neutral-200 truncate">
-                        {a.towards || a.destinationName}
+                        {a.destinationName}
                       </span>
                       <span
                         className={`text-sm font-mono tabular-nums shrink-0 w-14 text-right ${
@@ -219,6 +218,7 @@ export default function BusesTab() {
       try {
         const res = await fetch(`/api/bus-stops/search?q=${encodeURIComponent(q)}`);
         if (res.ok) setResults(await res.json());
+        else setResults([]);
       } finally {
         setSearching(false);
       }
@@ -246,6 +246,7 @@ export default function BusesTab() {
         <>
           <div className="mb-3">
             <button
+              type="button"
               onClick={clearStop}
               className="text-[10px] font-mono text-neutral-400 dark:text-neutral-600 hover:text-neutral-700 dark:hover:text-neutral-300 uppercase tracking-widest transition-colors"
             >
@@ -271,6 +272,7 @@ export default function BusesTab() {
               />
               {query && (
                 <button
+                  type="button"
                   onClick={() => {
                     setQuery("");
                     setResults([]);
