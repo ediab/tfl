@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Train, RefreshCw, MapPin, ChevronDown } from "lucide-react";
 import { ALL_STATIONS, lineColour, type Station } from "@/lib/stations";
+import { getNearestStations, isWithinLondonCatchment } from "@/lib/nearest-stations";
 
 interface Arrival {
   id: string;
@@ -206,15 +207,33 @@ function ArrivalsBoard({ stationId, stationName }: { stationId: string; stationN
 
 export default function HomeClient({
   initialStation,
-  suggestedStations,
+  suggestedStations: initialSuggestedStations,
 }: {
   initialStation: Station;
   suggestedStations: Station[];
 }) {
   const [station, setStation] = useState<Station>(initialStation);
+  const [suggestedStations, setSuggestedStations] = useState<Station[]>(initialSuggestedStations);
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const comboRef = useRef<HTMLDivElement>(null);
+  const userSelected = useRef(false);
+
+  useEffect(() => {
+    if (!navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        if (userSelected.current) return;
+        const coords = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+        if (!isWithinLondonCatchment(coords)) return;
+        const nearest = getNearestStations(coords, 4);
+        setStation(nearest[0]);
+        setSuggestedStations(nearest.slice(1));
+      },
+      undefined,
+      { timeout: 8000, maximumAge: 60_000 },
+    );
+  }, []);
 
   useEffect(() => {
     function onMouseDown(e: MouseEvent) {
@@ -232,6 +251,7 @@ export default function HomeClient({
     : ALL_STATIONS;
 
   function selectStation(nextStation: Station) {
+    userSelected.current = true;
     setStation(nextStation);
     setQuery("");
     setOpen(false);
