@@ -231,7 +231,7 @@ export default function HomeClient({
         setSuggestedStations(nearest.slice(1));
       },
       undefined,
-      { timeout: 8000, maximumAge: 60_000 },
+      { timeout: 8000, maximumAge: 0 },
     );
   }, []);
 
