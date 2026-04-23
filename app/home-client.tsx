@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Train, RefreshCw, MapPin, ChevronDown, Sun, Moon } from "lucide-react";
+import { Train, Bus, RefreshCw, MapPin, ChevronDown, Sun, Moon } from "lucide-react";
 import { ALL_STATIONS, lineColour, type Station } from "@/lib/stations";
 import { getNearestStations, isWithinLondonCatchment } from "@/lib/nearest-stations";
+import BusesTab from "@/app/buses-client";
 
 interface Arrival {
   id: string;
@@ -221,6 +222,8 @@ function ArrivalsBoard({ stationId, stationName }: { stationId: string; stationN
   );
 }
 
+type Tab = "tube" | "bus";
+
 export default function HomeClient({
   initialStation,
   suggestedStations: initialSuggestedStations,
@@ -228,6 +231,7 @@ export default function HomeClient({
   initialStation: Station;
   suggestedStations: Station[];
 }) {
+  const [tab, setTab] = useState<Tab>("tube");
   const [station, setStation] = useState<Station>(initialStation);
   const [suggestedStations, setSuggestedStations] = useState<Station[]>(initialSuggestedStations);
   const [query, setQuery] = useState("");
@@ -373,8 +377,12 @@ export default function HomeClient({
       style={{ paddingBottom: "max(2rem, env(safe-area-inset-bottom))" }}
     >
       <div className="max-w-2xl mx-auto">
-        <div className="flex items-center gap-2.5 mb-8">
-          <Train size={16} className="text-neutral-400 dark:text-neutral-600" />
+        <div className="flex items-center gap-2.5 mb-6">
+          {tab === "tube" ? (
+            <Train size={16} className="text-neutral-400 dark:text-neutral-600" />
+          ) : (
+            <Bus size={16} className="text-neutral-400 dark:text-neutral-600" />
+          )}
           <h1 className="text-sm font-mono tracking-[0.12em] text-neutral-500 dark:text-neutral-400 uppercase">
             tfl arrivals
           </h1>
@@ -392,6 +400,27 @@ export default function HomeClient({
             </button>
           </div>
         </div>
+
+        <div className="flex mb-6 border-b border-neutral-200 dark:border-neutral-800">
+          {(["tube", "bus"] as Tab[]).map((t) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={`px-4 py-2 text-xs font-mono uppercase tracking-[0.14em] transition-colors border-b-2 -mb-px ${
+                tab === t
+                  ? "border-neutral-800 dark:border-neutral-300 text-neutral-900 dark:text-neutral-100"
+                  : "border-transparent text-neutral-400 dark:text-neutral-600 hover:text-neutral-600 dark:hover:text-neutral-400"
+              }`}
+            >
+              {t}
+            </button>
+          ))}
+        </div>
+
+        {tab === "bus" ? (
+          <BusesTab />
+        ) : (
+          <>
 
         <div className="relative mb-3" ref={comboRef}>
           <button
@@ -508,6 +537,9 @@ export default function HomeClient({
         )}
 
         <ArrivalsBoard key={station.id} stationId={station.id} stationName={station.name} />
+
+          </>
+        )}
 
         <p className="mt-8 text-center text-[10px] font-mono text-neutral-300 dark:text-neutral-800 tracking-widest uppercase">
           data © tfl.gov.uk · open government licence
