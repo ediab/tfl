@@ -296,7 +296,7 @@ export default function HomeClient({
         if (userSelected.current) return;
         const coords = { lat: pos.coords.latitude, lon: pos.coords.longitude };
         if (!isWithinLondonCatchment(coords)) return;
-        const nearest = getNearestStations(coords, 4);
+        const nearest = getNearestStations(coords, 3);
         setStation(nearest[0]);
         setSuggestedStations(nearest.slice(1));
       },
