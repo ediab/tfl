@@ -82,7 +82,7 @@ function groupArrivals(arrivals: Arrival[]): LineGroup[] {
 
 const ROW_OPACITY = [1, 0.75, 0.55, 0.4, 0.3];
 
-function ArrivalsBoard({ stationId, stationName }: { stationId: string; stationName: string }) {
+function ArrivalsBoard({ stationId, stationName, isDark }: { stationId: string; stationName: string; isDark: boolean }) {
   const [arrivals, setArrivals] = useState<Arrival[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -169,11 +169,11 @@ function ArrivalsBoard({ stationId, stationName }: { stationId: string; stationN
             <div key={line.lineId} className={li > 0 ? "border-t border-neutral-200 dark:border-neutral-800" : ""}>
               <div
                 className="flex items-center px-4 py-2"
-                style={{ borderLeft: `3px solid ${lineColour(line.lineId)}` }}
+                style={{ borderLeft: `3px solid ${lineColour(line.lineId, isDark)}` }}
               >
                 <span
                   className="text-[10px] font-mono uppercase tracking-[0.18em]"
-                  style={{ color: lineColour(line.lineId) }}
+                  style={{ color: lineColour(line.lineId, isDark) }}
                 >
                   {line.lineName}
                 </span>
@@ -182,7 +182,7 @@ function ArrivalsBoard({ stationId, stationName }: { stationId: string; stationN
               {line.directions.map((dir) => (
                 <div key={dir.label}>
                   <div className="px-4 py-1 border-t border-neutral-200/50 dark:border-neutral-800/50">
-                    <span className="text-[9px] font-mono text-neutral-500 dark:text-neutral-400 uppercase tracking-[0.14em]">
+                    <span className="text-[9px] font-mono text-neutral-500 dark:text-neutral-200 uppercase tracking-[0.14em]">
                       {dir.label}
                     </span>
                   </div>
@@ -507,7 +507,7 @@ export default function HomeClient({
           </div>
         )}
 
-        <ArrivalsBoard key={station.id} stationId={station.id} stationName={station.name} />
+        <ArrivalsBoard key={station.id} stationId={station.id} stationName={station.name} isDark={isDark} />
 
         <p className="mt-8 text-center text-[10px] font-mono text-neutral-300 dark:text-neutral-800 tracking-widest uppercase">
           data © tfl.gov.uk · open government licence
