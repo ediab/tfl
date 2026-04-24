@@ -39,11 +39,10 @@ export async function GET(request: NextRequest) {
 
   // Static file not populated yet — proxy TfL's own search endpoint
   const apiKey = process.env.TFL_API_KEY;
-  if (!apiKey) return Response.json([]);
 
   const url = new URL(`https://api.tfl.gov.uk/StopPoint/Search/${encodeURIComponent(q)}`);
   url.searchParams.set("modes", "bus");
-  url.searchParams.set("app_key", apiKey);
+  if (apiKey) url.searchParams.set("app_key", apiKey);
 
   const res = await fetch(url.toString(), { next: { revalidate: 86400 } });
   if (!res.ok) return Response.json([]);
