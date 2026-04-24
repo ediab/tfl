@@ -16,9 +16,14 @@ interface Arrival {
   towards: string;
 }
 
+interface PlatformGroup {
+  platformLabel: string | null;
+  arrivals: Arrival[];
+}
+
 interface DirectionGroup {
   label: string;
-  arrivals: Arrival[];
+  platforms: PlatformGroup[];
 }
 
 interface LineGroup {
@@ -27,7 +32,7 @@ interface LineGroup {
   directions: DirectionGroup[];
 }
 
-const MAX_PER_DIRECTION = 5;
+const MAX_PER_PLATFORM = 5;
 const DIR_ORDER = [
   "Northbound",
   "Southbound",
@@ -45,23 +50,34 @@ function formatEta(seconds: number): string {
   return `${Math.floor(seconds / 60)} min`;
 }
 
-function extractDirection(platformName: string): string {
+function parsePlatform(platformName: string): { direction: string; platform: string | null } {
   const dash = platformName.indexOf(" - ");
-  if (dash > 0) return platformName.slice(0, dash);
-  for (const d of DIR_ORDER) {
-    if (platformName.toLowerCase().includes(d.toLowerCase())) return d;
+  if (dash > 0) {
+    return {
+      direction: platformName.slice(0, dash),
+      platform: platformName.slice(dash + 3).trim() || null,
+    };
   }
-  return platformName;
+  for (const d of DIR_ORDER) {
+    if (platformName.toLowerCase().includes(d.toLowerCase())) return { direction: d, platform: null };
+  }
+  return { direction: platformName, platform: null };
 }
 
 function groupArrivals(arrivals: Arrival[]): LineGroup[] {
-  const lineMap = new Map<string, { lineName: string; dirMap: Map<string, Arrival[]> }>();
+  const lineMap = new Map<
+    string,
+    { lineName: string; dirMap: Map<string, Map<string, Arrival[]>> }
+  >();
   for (const a of arrivals) {
     if (!lineMap.has(a.lineId)) lineMap.set(a.lineId, { lineName: a.lineName, dirMap: new Map() });
-    const dir = extractDirection(a.platformName);
+    const { direction, platform } = parsePlatform(a.platformName);
     const { dirMap } = lineMap.get(a.lineId)!;
-    if (!dirMap.has(dir)) dirMap.set(dir, []);
-    dirMap.get(dir)!.push(a);
+    if (!dirMap.has(direction)) dirMap.set(direction, new Map());
+    const platMap = dirMap.get(direction)!;
+    const key = platform ?? "";
+    if (!platMap.has(key)) platMap.set(key, []);
+    platMap.get(key)!.push(a);
   }
   return [...lineMap.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
@@ -74,10 +90,16 @@ function groupArrivals(arrivals: Arrival[]): LineGroup[] {
           const bi = DIR_ORDER.indexOf(b);
           return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
         })
-        .map(([label, grpArrivals]) => ({
-          label,
-          arrivals: grpArrivals.slice(0, MAX_PER_DIRECTION),
-        })),
+        .map(([label, platMap]) => {
+          const showPlatform = platMap.size > 1;
+          const platforms: PlatformGroup[] = [...platMap.entries()]
+            .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
+            .map(([platformLabel, arr]) => ({
+              platformLabel: showPlatform ? platformLabel || null : null,
+              arrivals: arr.slice(0, MAX_PER_PLATFORM),
+            }));
+          return { label, platforms };
+        }),
     }));
 }
 
@@ -179,39 +201,48 @@ function ArrivalsBoard({ stationId, stationName }: { stationId: string; stationN
 
               {line.directions.map((dir) => (
                 <div key={dir.label}>
-                  <div
-                    className="px-4 py-1.5 border-t border-neutral-200/50 dark:border-neutral-800/50 bg-neutral-50 dark:bg-neutral-900/70"
-                    style={{ borderLeft: `3px solid ${lineColour(line.lineId)}` }}
-                  >
-                    <span className="text-[9px] font-mono text-neutral-600 dark:text-neutral-300 uppercase tracking-[0.14em]">
-                      {dir.label}
-                    </span>
-                  </div>
-                  <ul>
-                    {dir.arrivals.map((a, i) => {
-                      const isDue = a.timeToStation < 60;
-                      return (
-                        <li
-                          key={a.id}
-                          className={`flex items-center px-4 py-2 ${
-                            i !== dir.arrivals.length - 1 ? "border-b border-neutral-200/30 dark:border-neutral-800/30" : ""
-                          }`}
-                          style={{ opacity: ROW_OPACITY[i] ?? 0.25 }}
-                        >
-                          <span className="flex-1 min-w-0 text-sm font-mono text-neutral-900 dark:text-neutral-200 truncate">
-                            {a.towards || a.destinationName}
+                  {dir.platforms.map((plat, pi) => (
+                    <div key={plat.platformLabel ?? `${dir.label}-${pi}`}>
+                      <div
+                        className="flex items-baseline gap-2 px-4 py-1.5 border-t border-neutral-200/50 dark:border-neutral-800/50 bg-neutral-50 dark:bg-neutral-900/70"
+                        style={{ borderLeft: `3px solid ${lineColour(line.lineId)}` }}
+                      >
+                        <span className="text-[9px] font-mono text-neutral-600 dark:text-neutral-300 uppercase tracking-[0.14em]">
+                          {dir.label}
+                        </span>
+                        {plat.platformLabel && (
+                          <span className="text-[9px] font-mono text-neutral-400 dark:text-neutral-600 uppercase tracking-[0.14em]">
+                            · {plat.platformLabel}
                           </span>
-                          <span
-                            className={`text-sm font-mono tabular-nums shrink-0 w-14 text-right ${
-                              isDue ? "text-amber-500 dark:text-amber-400 font-semibold" : "text-neutral-500"
-                            }`}
-                          >
-                            {formatEta(a.timeToStation)}
-                          </span>
-                        </li>
-                      );
-                    })}
-                  </ul>
+                        )}
+                      </div>
+                      <ul>
+                        {plat.arrivals.map((a, i) => {
+                          const isDue = a.timeToStation < 60;
+                          return (
+                            <li
+                              key={a.id}
+                              className={`flex items-center px-4 py-2 ${
+                                i !== plat.arrivals.length - 1 ? "border-b border-neutral-200/30 dark:border-neutral-800/30" : ""
+                              }`}
+                              style={{ opacity: ROW_OPACITY[i] ?? 0.25 }}
+                            >
+                              <span className="flex-1 min-w-0 text-sm font-mono text-neutral-900 dark:text-neutral-200 truncate">
+                                {a.towards || a.destinationName}
+                              </span>
+                              <span
+                                className={`text-sm font-mono tabular-nums shrink-0 w-14 text-right ${
+                                  isDue ? "text-amber-500 dark:text-amber-400 font-semibold" : "text-neutral-500"
+                                }`}
+                              >
+                                {formatEta(a.timeToStation)}
+                              </span>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+                  ))}
                 </div>
               ))}
             </div>
