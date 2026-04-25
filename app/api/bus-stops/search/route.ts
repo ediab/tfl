@@ -37,11 +37,12 @@ export async function GET(request: NextRequest) {
     return Response.json(results);
   }
 
-  // Static file not populated yet — proxy TfL's own search endpoint
-  const apiKey = process.env.TFL_API_KEY;
-
+  // When the generated stop index is absent, fall back to TfL's live search API.
   const url = new URL(`https://api.tfl.gov.uk/StopPoint/Search/${encodeURIComponent(q)}`);
   url.searchParams.set("modes", "bus");
+  url.searchParams.set("maxResults", "20");
+
+  const apiKey = process.env.TFL_API_KEY;
   if (apiKey) url.searchParams.set("app_key", apiKey);
 
   const res = await fetch(url.toString(), { next: { revalidate: 86400 } });

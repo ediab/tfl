@@ -16,8 +16,8 @@ function loadStopIds(): Set<string> | null {
 // Re-attempted on each request until the file is present (same lazy-load pattern as search route).
 let STOP_IDS: Set<string> | null = loadStopIds();
 
-// London bus stop NaPTAN IDs: "490" prefix, 8–16 alphanumeric chars
-const BUS_NAPTAN_RE = /^490[0-9A-Z]{5,13}$/i;
+// The generated bus-stop index includes concrete stops plus hub-style IDs.
+const BUS_NAPTAN_RE = /^[0-9A-Z]{3,20}$/i;
 
 function isValidBusStop(id: string): boolean {
   if (STOP_IDS) return STOP_IDS.has(id);
