@@ -9,6 +9,30 @@ npm run dev
 
 Open http://localhost:3000.
 
+## Deploy
+
+The production app is deployed to the VPS you reach with `ssh vps`.
+
+```bash
+npm run deploy
+```
+
+Useful variants:
+
+```bash
+npm run deploy -- --dry-run
+npm run deploy -- --allow-dirty
+```
+
+What the deploy script does:
+
+- pushes the current branch to `origin`
+- SSHes to `vps`
+- updates `/home/diab/apps/tfl`
+- runs `npm ci` and `npm run build`
+- restarts `tfl.service`
+- verifies the app through nginx locally on the VPS
+
 ## TfL API
 
 - **Arrivals**: `https://api.tfl.gov.uk/StopPoint/{naptanId}/Arrivals`
