@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Train, Bus, RefreshCw, MapPin, ChevronDown, Sun, Moon } from "lucide-react";
 import { ALL_STATIONS, lineColour, type Station } from "@/lib/stations";
 import { getNearestStations, isWithinLondonCatchment } from "@/lib/nearest-stations";
@@ -112,42 +112,51 @@ function ArrivalsBoard({ stationId, stationName }: { stationId: string; stationN
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const fetchArrivals = useCallback(async () => {
-    try {
-      const res = await fetch(`/api/arrivals/${stationId}`);
-      if (!res.ok) throw new Error(`TfL API error ${res.status}`);
-      const data: Arrival[] = await res.json();
-      setArrivals(
-        data.filter((a) => a.timeToStation >= 0).sort((a, b) => a.timeToStation - b.timeToStation),
-      );
-      setLastUpdated(new Date());
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to fetch arrivals");
-    } finally {
-      setLoading(false);
-    }
-  }, [stationId]);
-
   useEffect(() => {
-    fetchArrivals();
-    intervalRef.current = setInterval(fetchArrivals, 30_000);
+    let ignore = false;
+
+    async function fetchArrivals() {
+      try {
+        const res = await fetch(`/api/arrivals/${stationId}`);
+        if (!res.ok) throw new Error(`TfL API error ${res.status}`);
+        const data: Arrival[] = await res.json();
+        if (ignore) return;
+        setArrivals(
+          data.filter((a) => a.timeToStation >= 0).sort((a, b) => a.timeToStation - b.timeToStation),
+        );
+        setLastUpdated(new Date());
+        setError(null);
+      } catch (e) {
+        if (ignore) return;
+        setError(e instanceof Error ? e.message : "Failed to fetch arrivals");
+      } finally {
+        if (!ignore) setLoading(false);
+      }
+    }
+
+    void fetchArrivals();
+    intervalRef.current = setInterval(() => {
+      void fetchArrivals();
+    }, 30_000);
 
     function handleVisibility() {
       if (document.hidden) {
         if (intervalRef.current) clearInterval(intervalRef.current);
       } else {
-        fetchArrivals();
-        intervalRef.current = setInterval(fetchArrivals, 30_000);
+        void fetchArrivals();
+        intervalRef.current = setInterval(() => {
+          void fetchArrivals();
+        }, 30_000);
       }
     }
     document.addEventListener("visibilitychange", handleVisibility);
 
     return () => {
+      ignore = true;
       if (intervalRef.current) clearInterval(intervalRef.current);
       document.removeEventListener("visibilitychange", handleVisibility);
     };
-  }, [fetchArrivals]);
+  }, [stationId]);
 
   const groups = useMemo(() => groupArrivals(arrivals), [arrivals]);
 
@@ -273,9 +282,11 @@ export default function HomeClient({
   const listRef = useRef<HTMLUListElement>(null);
   const userSelected = useRef(false);
 
-  // Sync theme state with the class already set by the anti-FOUC script
   useEffect(() => {
-    setIsDark(document.documentElement.classList.contains("dark"));
+    const frame = requestAnimationFrame(() => {
+      setIsDark(document.documentElement.classList.contains("dark"));
+    });
+    return () => cancelAnimationFrame(frame);
   }, []);
 
   // Watch system preference and auto-update when no manual override is stored
@@ -307,13 +318,21 @@ export default function HomeClient({
 
   // Restore last selected station from localStorage
   useEffect(() => {
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
     try {
       const saved = localStorage.getItem(LS_KEY);
       if (saved && !userSelected.current) {
         const found = ALL_STATIONS.find((s) => s.id === saved);
-        if (found) setStation(found);
+        if (found) {
+          timeoutId = setTimeout(() => {
+            setStation(found);
+          }, 0);
+        }
       }
     } catch {}
+    return () => {
+      if (timeoutId) clearTimeout(timeoutId);
+    };
   }, []);
 
   // Persist selected station
@@ -346,17 +365,12 @@ export default function HomeClient({
       if (comboRef.current && !comboRef.current.contains(e.target as Node)) {
         setOpen(false);
         setQuery("");
+        setActiveIndex(-1);
       }
     }
     document.addEventListener("pointerdown", onPointerDown);
     return () => document.removeEventListener("pointerdown", onPointerDown);
   }, []);
-
-  // Reset keyboard cursor when query changes or dropdown closes
-  useEffect(() => setActiveIndex(-1), [query]);
-  useEffect(() => {
-    if (!open) setActiveIndex(-1);
-  }, [open]);
 
   // Scroll highlighted option into view
   useEffect(() => {
@@ -378,6 +392,24 @@ export default function HomeClient({
     setStation(next);
     setQuery("");
     setOpen(false);
+    setActiveIndex(-1);
+  }
+
+  function updateQuery(nextQuery: string) {
+    setQuery(nextQuery);
+    setActiveIndex(-1);
+  }
+
+  function togglePicker() {
+    setOpen((was) => !was);
+    setQuery("");
+    setActiveIndex(-1);
+  }
+
+  function closePicker() {
+    setOpen(false);
+    setQuery("");
+    setActiveIndex(-1);
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -396,8 +428,7 @@ export default function HomeClient({
         break;
       case "Escape":
         e.preventDefault();
-        setOpen(false);
-        setQuery("");
+        closePicker();
         break;
     }
   }
@@ -455,10 +486,7 @@ export default function HomeClient({
 
         <div className="relative mb-3" ref={comboRef}>
           <button
-            onClick={() => {
-              setOpen((was) => !was);
-              setQuery("");
-            }}
+            onClick={togglePicker}
             aria-haspopup="listbox"
             aria-expanded={open}
             aria-controls={LISTBOX_ID}
@@ -495,7 +523,7 @@ export default function HomeClient({
                   }
                   type="text"
                   value={query}
-                  onChange={(e) => setQuery(e.target.value)}
+                  onChange={(e) => updateQuery(e.target.value)}
                   onKeyDown={handleKeyDown}
                   placeholder="type to filter…"
                   className="flex-1 bg-transparent py-2.5 font-mono text-neutral-800 dark:text-neutral-300 placeholder-neutral-300 dark:placeholder-neutral-700 outline-none"
@@ -503,7 +531,7 @@ export default function HomeClient({
                 />
                 {query && (
                   <button
-                    onClick={() => setQuery("")}
+                    onClick={() => updateQuery("")}
                     className="text-neutral-400 dark:text-neutral-700 hover:text-neutral-600 dark:hover:text-neutral-500 text-[10px] font-mono uppercase tracking-widest"
                   >
                     clear

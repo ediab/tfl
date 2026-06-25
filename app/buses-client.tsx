@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Bus, RefreshCw, MapPin } from "lucide-react";
 
 interface BusStop {
@@ -57,41 +57,50 @@ function BusArrivalsBoard({ stop }: { stop: BusStop }) {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const fetchArrivals = useCallback(async () => {
-    try {
-      const res = await fetch(`/api/bus-arrivals/${stop.id}`);
-      if (!res.ok) throw new Error(`TfL API error ${res.status}`);
-      const data: BusArrival[] = await res.json();
-      setArrivals(
-        data.filter((a) => a.timeToStation >= 0).sort((a, b) => a.timeToStation - b.timeToStation),
-      );
-      setLastUpdated(new Date());
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to fetch arrivals");
-    } finally {
-      setLoading(false);
-    }
-  }, [stop.id]);
-
   useEffect(() => {
-    fetchArrivals();
-    intervalRef.current = setInterval(fetchArrivals, 30_000);
+    let ignore = false;
+
+    async function fetchArrivals() {
+      try {
+        const res = await fetch(`/api/bus-arrivals/${stop.id}`);
+        if (!res.ok) throw new Error(`TfL API error ${res.status}`);
+        const data: BusArrival[] = await res.json();
+        if (ignore) return;
+        setArrivals(
+          data.filter((a) => a.timeToStation >= 0).sort((a, b) => a.timeToStation - b.timeToStation),
+        );
+        setLastUpdated(new Date());
+        setError(null);
+      } catch (e) {
+        if (ignore) return;
+        setError(e instanceof Error ? e.message : "Failed to fetch arrivals");
+      } finally {
+        if (!ignore) setLoading(false);
+      }
+    }
+
+    void fetchArrivals();
+    intervalRef.current = setInterval(() => {
+      void fetchArrivals();
+    }, 30_000);
 
     function handleVisibility() {
       if (document.hidden) {
         if (intervalRef.current) clearInterval(intervalRef.current);
       } else {
-        fetchArrivals();
-        intervalRef.current = setInterval(fetchArrivals, 30_000);
+        void fetchArrivals();
+        intervalRef.current = setInterval(() => {
+          void fetchArrivals();
+        }, 30_000);
       }
     }
     document.addEventListener("visibilitychange", handleVisibility);
     return () => {
+      ignore = true;
       if (intervalRef.current) clearInterval(intervalRef.current);
       document.removeEventListener("visibilitychange", handleVisibility);
     };
-  }, [fetchArrivals]);
+  }, [stop.id]);
 
   const groups = useMemo(() => groupByRoute(arrivals), [arrivals]);
   const stopLabel = stop.name + (stop.indicator ? ` · ${stop.indicator}` : "");
@@ -185,17 +194,17 @@ function BusArrivalsBoard({ stop }: { stop: BusStop }) {
 export default function BusesTab() {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<BusStop[]>([]);
-  const [selectedStop, setSelectedStop] = useState<BusStop | null>(null);
-  const [searching, setSearching] = useState(false);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Restore last selected stop from localStorage
-  useEffect(() => {
+  const [selectedStop, setSelectedStop] = useState<BusStop | null>(() => {
+    if (typeof window === "undefined") return null;
     try {
       const saved = localStorage.getItem(LS_BUS_STOP);
-      if (saved) setSelectedStop(JSON.parse(saved));
-    } catch {}
-  }, []);
+      return saved ? (JSON.parse(saved) as BusStop) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [searching, setSearching] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Persist selected stop
   useEffect(() => {
@@ -208,12 +217,7 @@ export default function BusesTab() {
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     const q = query.trim();
-    if (!q) {
-      setResults([]);
-      setSearching(false);
-      return;
-    }
-    setSearching(true);
+    if (!q) return;
     debounceRef.current = setTimeout(async () => {
       try {
         const res = await fetch(`/api/bus-stops/search?q=${encodeURIComponent(q)}`);
@@ -227,6 +231,16 @@ export default function BusesTab() {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
   }, [query]);
+
+  function updateQuery(nextQuery: string) {
+    setQuery(nextQuery);
+    if (!nextQuery.trim()) {
+      setResults([]);
+      setSearching(false);
+    } else {
+      setSearching(true);
+    }
+  }
 
   function selectStop(stop: BusStop) {
     setSelectedStop(stop);
@@ -263,7 +277,7 @@ export default function BusesTab() {
               <input
                 type="text"
                 value={query}
-                onChange={(e) => setQuery(e.target.value)}
+                onChange={(e) => updateQuery(e.target.value)}
                 placeholder="type a bus stop name…"
                 className="flex-1 bg-transparent py-3 font-mono text-neutral-800 dark:text-neutral-300 placeholder-neutral-300 dark:placeholder-neutral-700 outline-none"
                 style={{ fontSize: "16px" }}
@@ -274,7 +288,7 @@ export default function BusesTab() {
                 <button
                   type="button"
                   onClick={() => {
-                    setQuery("");
+                    updateQuery("");
                     setResults([]);
                   }}
                   className="text-neutral-400 dark:text-neutral-700 hover:text-neutral-600 dark:hover:text-neutral-500 text-[10px] font-mono uppercase tracking-widest"
