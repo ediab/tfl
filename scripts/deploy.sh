@@ -86,6 +86,12 @@ fi
 
 git pull --ff-only origin $q_branch
 npm ci
+
+if [[ ! -s lib/bus-stops.json ]]; then
+  echo "Generating lib/bus-stops.json (bus arrivals return empty without it)..."
+  node scripts/download-bus-stops.mjs || echo "Warning: bus stop download failed; buses will fall back to TfL live search" >&2
+fi
+
 npm run build
 sudo systemctl restart $q_service
 systemctl is-active $q_service
