@@ -11,29 +11,12 @@ Open http://localhost:3000.
 
 ## Deploy
 
-The production app is deployed to the VPS you reach with `ssh vps`.
+Production deploys are push-triggered: every push to `main` runs the **Deploy to VPS** workflow,
+which deploys through a restricted, forced-command deploy gate on the server. Do not use the manual
+deploy scripts for this application.
 
-```bash
-npm run deploy
-```
-
-Useful variants:
-
-```bash
-npm run deploy -- --dry-run
-npm run deploy -- --allow-dirty
-```
-
-What the deploy script does:
-
-- pushes the current branch to `origin`
-- SSHes to `vps`
-- updates `/home/diab/apps/tfl`
-- runs `npm ci`
-- generates `lib/bus-stops.json` if it's missing (see below)
-- runs `npm run build`
-- restarts `tfl.service`
-- verifies the app through nginx locally on the VPS
+See [DEPLOYMENT.md](DEPLOYMENT.md) for the deploy pipeline, runtime isolation, the guard on the
+legacy manual path, and recovery.
 
 ## TfL API
 
