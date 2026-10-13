@@ -149,7 +149,7 @@ async function fetchJsonBounded(urlString, apiOrigin, apiProtocol, runDeadline) 
       }
       let res;
       try {
-        res = await fetch(parsed, { redirect: "manual", signal: ac.signal });
+        res = await fetch(parsed, { redirect: "manual", signal: ac.signal, headers: { Accept: "application/json", "User-Agent": "tfl-native-rollout-contract-check/1" } });
       } catch (e) {
         if (aborted || e?.name === "AbortError") {
           return timeoutError();
@@ -230,7 +230,7 @@ async function fetchJsonBounded(urlString, apiOrigin, apiProtocol, runDeadline) 
 }
 
 // Validates one page envelope. Strict, with stable value-free reasons:
-// missing/mistyped metadata, zero/negative pageSize, wrong currentPage,
+// missing/mistyped metadata, zero/negative pageSize, wrong page,
 // mid-run inconsistent totals or a declared total above the record cap are
 // fatal. Completeness is proven from counts, never assumed.
 function validateEnvelope(data, page, firstTotal, firstPageSize) {
@@ -246,8 +246,8 @@ function validateEnvelope(data, page, firstTotal, firstPageSize) {
   if (typeof data.pageSize !== "number" || !Number.isInteger(data.pageSize) || data.pageSize < 1) {
     return { error: true, code: "PAGING-PAGESIZE-BAD", why: "pageSize missing or not a positive integer" };
   }
-  if (data.currentPage !== page) {
-    return { error: true, code: "PAGING-CURRENTPAGE-BAD", why: "currentPage does not match the requested page" };
+  if (data.page !== page) {
+    return { error: true, code: "PAGING-PAGE-BAD", why: "page does not match the requested page" };
   }
   if (firstTotal !== null && data.total !== firstTotal) {
     return { error: true, code: "PAGING-INCONSISTENT", why: "total changed across pages" };

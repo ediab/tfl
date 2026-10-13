@@ -37,7 +37,7 @@ zero, negative, non-integer or above-clamp value exits `CONFIG-BAD`):
   in-flight requests/body reads, retries and pauses, and is checked during
   collection and before publication, in addition to the per-page deadline (default 10 s, clamp
   1–300 s) and the per-page body cap (default 32 MiB, ≤ the index cap).
-- Paging: `total`, `pageSize`, `currentPage` and the exact per-page count
+- Paging: `total`, `pageSize`, `page` and the exact per-page count
   (`pageSize`, last page `total − (pages−1)·pageSize`) are required,
   consistent mid-run and complete; absent/malformed metadata, short or long
   pages, duplicates and inconsistency are fatal — never silent completion.
@@ -49,7 +49,7 @@ zero, negative, non-integer or above-clamp value exits `CONFIG-BAD`):
 - Secrets: `app_key` travels only in the API request URL. Errors and logs
   never echo the URL, headers, body **or any API response value** — only
   status codes, our own page/position numbers and stable fixed strings — so
-  a response reflecting the key in `currentPage`, an id or a name cannot
+  a response reflecting the key in `page`, an id or a name cannot
   leak it. The key is never written to any file.
 - No-key generation remains supported (`keyUsed: false` in the sidecar).
 
@@ -163,3 +163,12 @@ installed helper compatibility and real endpoint paging are NOT proved by
 these tests. Real keyless generation must succeed before operator installation
 or release acceptance. Parent owns reviewed installation, scoped restart and
 rollback. No helper file is automatically installed by this branch.
+
+Parent live metadata check13October from VPS: keyless official page1 returned200
+with keys `$type,page,pageSize,stopPoints,total`, page1, pageSize1000,
+total32567 and1000 stopPoints. Generator now requires the actual `page` field
+(and explicit JSON Accept/identifying User-Agent). Default Python UA returned403;
+the explicit request returned200. This is ONE-page compatibility evidence, not
+a complete live generation or authenticated provenance. The actual-envelope
+regression exercises the unchanged official default CLI at an injected HTTP
+boundary and then validates the generated pair.

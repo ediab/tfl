@@ -81,7 +81,7 @@ function tflStops(count, nameOffset = 0) {
 }
 
 const envelope = (page, total, pageSize, stopPoints) =>
-  JSON.stringify({ total, pageSize, currentPage: page, stopPoints });
+  JSON.stringify({ total, pageSize, page: page, stopPoints });
 
 // Replicates the generator's normalize+sort to compute expected output.
 function expectedIndex(tflStops_) {
@@ -375,7 +375,7 @@ await runCase("redirect-cross-origin-refused", async ({ startServer }) => {
   const ws = makeWs();
   const evil = startServer((req, res) => {
     res.writeHead(200);
-    res.end('{"total":1,"pageSize":1,"currentPage":1,"stopPoints":[]}');
+    res.end('{"total":1,"pageSize":1,"page":1,"stopPoints":[]}');
   });
   const evilPort = await evil.portPromise;
   const server = startServer((req, res) => {
@@ -416,7 +416,7 @@ await runCase("truncated-body-fails", async ({ startServer }) => {
 await runCase("paging-missing-total", async ({ startServer }) => {
   const ws = makeWs();
   const server = startServer(pagesHandler({
-    1: { body: JSON.stringify({ pageSize: 1000, currentPage: 1, stopPoints: tflStops(2) }) },
+    1: { body: JSON.stringify({ pageSize: 1000, page: 1, stopPoints: tflStops(2) }) },
   }));
   const r = await runGenerator(ws, await server.portPromise);
   assert(r.code !== 0, "generator must fail");
@@ -427,7 +427,7 @@ await runCase("paging-missing-total", async ({ startServer }) => {
 await runCase("paging-defaults-refused", async ({ startServer }) => {
   const ws = makeWs();
   const server = startServer(pagesHandler({
-    1: { body: JSON.stringify({ total: 5, pageSize: 0, currentPage: 1, stopPoints: [] }) },
+    1: { body: JSON.stringify({ total: 5, pageSize: 0, page: 1, stopPoints: [] }) },
   }));
   const r = await runGenerator(ws, await server.portPromise);
   assert(r.code !== 0 && r.stderr.includes("PAGING-PAGESIZE-BAD"), `pageSize check: ${r.stderr}`);
@@ -440,8 +440,8 @@ await runCase("paging-currentpage-mismatch", async ({ startServer }) => {
     1: { body: envelope(7, 5, 3, GOOD_TFL.slice(0, 3)) },
   }));
   const r = await runGenerator(ws, await server.portPromise);
-  assert(r.code !== 0 && r.stderr.includes("PAGING-CURRENTPAGE-BAD"), `currentPage check: ${r.stderr}`);
-  return { detail: "currentPage must match requested page" };
+  assert(r.code !== 0 && r.stderr.includes("PAGING-PAGE-BAD"), `page check: ${r.stderr}`);
+  return { detail: "page must match requested page" };
 });
 
 await runCase("paging-count-mismatch", async ({ startServer }) => {
@@ -722,7 +722,7 @@ await runCase("body-socket-truncation", async ({ startServer }) => {
   let sockets = [];
   const server = startServer((req, res) => {
     res.writeHead(200, { "content-type": "application/json" });
-    res.write('{"total":1,"pageSize":1,"currentPage":1,"stopPoints":[{"naptanId":"4900');
+    res.write('{"total":1,"pageSize":1,"page":1,"stopPoints":[{"naptanId":"4900');
     sockets.push(res.socket);
     setTimeout(() => res.socket.destroy(), 250);
   });
@@ -794,7 +794,7 @@ await runCase("run-deadline-enforced", async ({ startServer }) => {
 await runCase("early-total-cap-refusal", async ({ startServer }) => {
   const ws = makeWs();
   const server = startServer(pagesHandler({
-    1: { body: JSON.stringify({ total: 100_001, pageSize: 1_000_000, currentPage: 1, stopPoints: [] }) },
+    1: { body: JSON.stringify({ total: 100_001, pageSize: 1_000_000, page: 1, stopPoints: [] }) },
   }));
   const r = await runGenerator(ws, await server.portPromise);
   assert(r.code !== 0 && r.stderr.includes("PAGING-OVERSIZE-DECLARED"), `declared total cap: ${r.stderr}`);
@@ -846,15 +846,15 @@ await runCase("cumulative-byte-cap-refused", async ({ startServer }) => {
 });
 
 await runCase("reflected-key-leak-resistance", async ({ startServer }) => {
-  // Sub-case 1: hostile paging metadata reflects the key as currentPage.
+  // Sub-case 1: hostile paging metadata reflects the key as page.
   const ws = makeWs();
   const server = startServer(pagesHandler({
-    1: { body: JSON.stringify({ total: 1, pageSize: 1, currentPage: TEST_KEY, stopPoints: tflStops(1) }) },
+    1: { body: JSON.stringify({ total: 1, pageSize: 1, page: TEST_KEY, stopPoints: tflStops(1) }) },
   }));
   const r = await runGenerator(ws, await server.portPromise, { TFL_API_KEY: TEST_KEY });
-  assert(r.code !== 0 && r.stderr.includes("PAGING-CURRENTPAGE-BAD"), `stable currentPage error: ${r.stderr}`);
-  checkNoSecret("reflected-currentPage stderr", r.stderr);
-  checkNoSecret("reflected-currentPage stdout", r.stdout);
+  assert(r.code !== 0 && r.stderr.includes("PAGING-PAGE-BAD"), `stable page error: ${r.stderr}`);
+  checkNoSecret("reflected-page stderr", r.stderr);
+  checkNoSecret("reflected-page stdout", r.stdout);
 
   // Sub-case 2: hostile page data reflects the key as a commonName and a
   // duplicate id; errors must stay stable (no ids, no names).
@@ -970,6 +970,23 @@ await runCase("validator-fifo-refuses-without-writer", async () => {
   const v = await runValidator(ws);
   assert(v.code === 1 && v.stdout.includes("READ-NOT-REGULAR"), `FIFO refusal: ${v.stdout} ${v.stderr}`);
   assert(v.ms < 2500, "opening a FIFO must not wait for a writer");
+});
+
+await runCase("actual-tfl-page-envelope-and-explicit-headers", async () => {
+  const ws = makeWs();
+  const hook = join(ws, "actual-tfl-fetch.mjs");
+  const response = { $type: "Tfl.Api.Presentation.Entities.StopPointsResponse, Tfl.Api.Presentation.Entities", page: 1, pageSize: 1000, total: 1, stopPoints: GOOD_TFL.slice(0, 1) };
+  writeFileSync(hook, `globalThis.fetch = async (input, init) => {
+    const u = new URL(input);
+    if (u.origin !== 'https://api.tfl.gov.uk' || u.searchParams.get('page') !== '1') throw new Error('wrong endpoint');
+    if (init.headers.Accept !== 'application/json' || init.headers['User-Agent'] !== 'tfl-native-rollout-contract-check/1') throw new Error('wrong headers');
+    return new Response(${JSON.stringify(JSON.stringify(response))}, {status:200,headers:{'content-type':'application/json'}});
+  };`);
+  const r = await runChild(ws, ["--import", hook, "scripts/download-bus-stops.mjs"]);
+  assert(r.code === 0, `actual page envelope: ${r.stderr}`);
+  const v = await runValidator(ws, ["--require-generated"]);
+  assert(v.code === 0, `generated pair: ${v.stderr}`);
+  return { detail: "primary13October envelope uses page, not currentPage; real CLI + explicit identifying headers" };
 });
 
 // ---------- summary ----------
