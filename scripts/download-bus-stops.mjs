@@ -252,8 +252,14 @@ function validateEnvelope(data, page, firstTotal, firstPageSize) {
   if (firstTotal !== null && data.total !== firstTotal) {
     return { error: true, code: "PAGING-INCONSISTENT", why: "total changed across pages" };
   }
-  if (firstPageSize !== null && data.pageSize !== firstPageSize) {
-    return { error: true, code: "PAGING-INCONSISTENT", why: "pageSize changed across pages" };
+  if (firstPageSize !== null) {
+    // TfL reports the number returned as pageSize: the final page is smaller.
+    // Accept only the exact final remainder; every non-final page remains full.
+    const pages = Math.ceil(firstTotal / firstPageSize);
+    const expectedSize = page === pages ? firstTotal - (pages - 1) * firstPageSize : firstPageSize;
+    if (data.pageSize !== expectedSize) {
+      return { error: true, code: "PAGING-INCONSISTENT", why: "pageSize does not match this page's exact expected count" };
+    }
   }
   return { error: false, stopPoints: data.stopPoints, total: data.total, pageSize: data.pageSize };
 }

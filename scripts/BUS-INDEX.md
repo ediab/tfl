@@ -172,3 +172,11 @@ the explicit request returned200. This is ONE-page compatibility evidence, not
 a complete live generation or authenticated provenance. The actual-envelope
 regression exercises the unchanged official default CLI at an injected HTTP
 boundary and then validates the generated pair.
+
+Further primary metadata: official page33 returned pageSize567 and567 stops
+for total32567 (first-page window1000). The final-page size is the exact
+remainder, not the first page's window size. Validation now accepts only that
+mathematically exact final-page remainder; changed non-final sizes still
+refuse. First full generation at33d295d safely refused a transient inconsistent
+non-final page13 and wrote neither index nor sidecar. Later direct requests
+showed page13 at1000 again. No complete live generation is claimed yet.

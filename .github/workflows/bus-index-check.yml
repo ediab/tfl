@@ -1,0 +1,29 @@
+name: TFL native input checks
+on:
+  push:
+    branches: [migration/tfl-native-rollout-20261013]
+  pull_request:
+    branches: [main]
+permissions: {}
+concurrency:
+  group: tfl-native-input-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Bounded real CLI checks with synthetic public-data fixtures
+        run: |
+          set -euo pipefail
+          node --version
+          node -e 'if (Number(process.versions.node.split(".")[0]) < 20) process.exit(1)'
+          timeout --signal=TERM --kill-after=5s 60s node scripts/test-bus-index.mjs
+          timeout --signal=TERM --kill-after=5s 15s node scripts/test-stage-bus-index.mjs
+          bash -n ops/native/tfl-export ops/native/tfl-build
+          for file in scripts/download-bus-stops.mjs scripts/validate-bus-stops.mjs scripts/lib/bus-stops-schema.mjs scripts/stage-bus-index.mjs; do node --check "$file"; done

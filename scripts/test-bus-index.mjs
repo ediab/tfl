@@ -81,7 +81,7 @@ function tflStops(count, nameOffset = 0) {
 }
 
 const envelope = (page, total, pageSize, stopPoints) =>
-  JSON.stringify({ total, pageSize, page: page, stopPoints });
+  JSON.stringify({ total, pageSize: page === Math.ceil(total / pageSize) ? total - (Math.ceil(total / pageSize) - 1) * pageSize : pageSize, page: page, stopPoints });
 
 // Replicates the generator's normalize+sort to compute expected output.
 function expectedIndex(tflStops_) {
@@ -987,6 +987,20 @@ await runCase("actual-tfl-page-envelope-and-explicit-headers", async () => {
   const v = await runValidator(ws, ["--require-generated"]);
   assert(v.code === 0, `generated pair: ${v.stderr}`);
   return { detail: "primary13October envelope uses page, not currentPage; real CLI + explicit identifying headers" };
+});
+
+await runCase("official-final-page-reports-remainder-as-pageSize", async ({ startServer }) => {
+  const ws = makeWs();
+  const stops = tflStops(5);
+  const server = startServer(pagesHandler({
+    1: { body: JSON.stringify({ total: 5, pageSize: 3, page: 1, stopPoints: stops.slice(0, 3) }) },
+    2: { body: JSON.stringify({ total: 5, pageSize: 2, page: 2, stopPoints: stops.slice(3) }) },
+  }));
+  const r = await runGenerator(ws, await server.portPromise);
+  assert(r.code === 0, `official tail count: ${r.stderr}`);
+  assert(JSON.parse(wsFile(ws, "lib/bus-stops.json")).length === 5, "all five distinct stops retained");
+  assert(server.requests.length === 2, "exactly two pages requested");
+  return { detail: "observed official final-page semantics: remainder pageSize; non-final/count/total/duplicate refusals retained" };
 });
 
 // ---------- summary ----------
