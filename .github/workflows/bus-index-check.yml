@@ -1,7 +1,10 @@
 name: TFL native input checks
 on:
   push:
-    branches: [migration/tfl-native-rollout-20261013]
+    # The migrated release owner is the native helper (/usr/local/sbin/tfl-deploy),
+    # so main pushes run these honest input checks only — there is no deploy
+    # workflow to fail.
+    branches: [migration/tfl-native-rollout-20261013, main]
   pull_request:
     branches: [main]
 permissions: {}

@@ -11,9 +11,11 @@ Open http://localhost:3000.
 
 ## Deploy
 
-Production deploys are push-triggered: every push to `main` runs the **Deploy to VPS** workflow,
-which deploys through a restricted, forced-command deploy gate on the server. Do not use the manual
-deploy scripts for this application.
+Production releases are published by the protected native helper on the server
+(`/usr/local/sbin/tfl-deploy-inhibit` — fetch/ff `main`, export, build, seal, activate,
+health check, retention). Every push to `main` runs the **TFL native input checks** workflow;
+there is no deploy workflow (the legacy generic gate was removed — do not reintroduce a
+push-triggered deployment transport). Use the protected helper, not manual deploy scripts.
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for the deploy pipeline, runtime isolation, the guard on the
 legacy manual path, and recovery.

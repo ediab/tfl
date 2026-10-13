@@ -2,9 +2,10 @@
 
 ## Overview
 
-`main` is the deployment source of truth. Every push to `main` runs the **Deploy to VPS**
-GitHub workflow. The workflow connects to a restricted deploy account whose key is limited by a
-forced-command gate; the gate routes the TFL deploy command to a root-owned, argument-free helper.
+`main` is the deployment source of truth. The release owner is the root-owned native helper
+chain invoked by an operator through `/usr/local/sbin/tfl-deploy-inhibit` (no GitHub deploy
+workflow remains: the legacy generic gate was removed; pushes to `main` run the existing
+**TFL native input checks** workflow only).
 
 The helper performs, in order:
 
