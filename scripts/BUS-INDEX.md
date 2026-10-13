@@ -12,89 +12,132 @@ changed by this round.
 | --- | --- |
 | `scripts/download-bus-stops.mjs` | Generator CLI: downloads all pages of `https://api.tfl.gov.uk/StopPoint/Mode/bus`, validates each page strictly, writes the index atomically plus a provenance sidecar. |
 | `scripts/validate-bus-stops.mjs` | Standalone validator CLI: checks the strict index contract and, when present, the provenance sidecar. |
-| `scripts/lib/bus-stops-schema.mjs` | Shared validation module used by both CLIs. |
+| `scripts/lib/bus-stops-schema.mjs` | Shared validation module (contract, bounded file reads, source classification). |
 | `scripts/test-bus-index.mjs` | Synthetic checks (real CLIs against loopback HTTP servers). |
 
 ```
 TFL_API_KEY=xxx node scripts/download-bus-stops.mjs   # key may be omitted
-node scripts/validate-bus-stops.mjs [path] [--json] [--require-generated]
+node scripts/validate-bus-stops.mjs [path] [--json] [--require-generated] [--allow-synthetic-source]
 node scripts/test-bus-index.mjs
 ```
 
-## Generator bounds (all fixed in code, deliberately not configurable)
+## Generator bounds
 
-- Complete paging only: `total`, `pageSize`, `currentPage` and the exact
-  per-page count `pageSize` (last page: `total − (pages−1)·pageSize`) are
-  required on every response. Missing, mistyped, zero/negative, mid-run
-  inconsistent metadata, short/long pages and duplicate stop ids are fatal
-  errors — an anomaly can never masquerade as completion.
-- Hard caps: ≤50 pages, ≤100k stops, ≥1 stop, one redirect per request
-  (cross-origin redirects refused entirely), page timeout 10 s (clamped to
-  ≤300 s), per-page body cap 32 MiB, ≤2 attempts per transient fault.
-- Secrets: `app_key` travels only in the API request URL. Errors print a
-  status code and reason — never the URL, headers or body, so the key can
-  never be echoed by an error path. The key is never written to any file.
+Fixed in code; environment overrides for deadlines are strict (a present but
+zero, negative, non-integer or above-clamp value exits `CONFIG-BAD`):
+
+- Per page: one redirect per request; a single page deadline (`AbortController`)
+  spans redirects, headers **and the complete body consumption**, so a
+  stalled body after headers expires instead of hanging; bodies are
+  released/cancelled on every exit path (redirect, non-2xx, oversize,
+  stream failure, completion). Streamed failures surface as stable
+  value-free codes (`FETCH-HTTP-TIMEOUT`, `FETCH-BODY-READ`,
+  `FETCH-ENCODING-BAD`, `FETCH-PARSE`).
+- Whole run: a fixed run deadline (default 600 s, clamp 1–1800 s) is checked
+  between pages, in addition to the per-page deadline (default 10 s, clamp
+  1–300 s) and the per-page body cap (default 32 MiB, ≤ the index cap).
+- Paging: `total`, `pageSize`, `currentPage` and the exact per-page count
+  (`pageSize`, last page `total − (pages−1)·pageSize`) are required,
+  consistent mid-run and complete; absent/malformed metadata, short or long
+  pages, duplicates and inconsistency are fatal — never silent completion.
+- Caps enforced early: a declared total above the 100 k-record cap is
+  refused before any collection; each stop's id pattern and name/indicator
+  length plus latitude/longitude ranges are validated before storage; the
+  cumulative serialized byte size is bounded while pages stream (exact
+  formula, never counted only after all pages).
+- Secrets: `app_key` travels only in the API request URL. Errors and logs
+  never echo the URL, headers, body **or any API response value** — only
+  status codes, our own page/position numbers and stable fixed strings — so
+  a response reflecting the key in `currentPage`, an id or a name cannot
+  leak it. The key is never written to any file.
 - No-key generation remains supported (`keyUsed: false` in the sidecar).
 
-## Atomic publication and provenance
+## Publication and metadata
 
-1. The index is built and validated in memory, written to
-   `lib/bus-stops.json.tmp-atomic`, fsynced, then `rename()`d into place.
-   A crashed run never leaves a half-written index; the previous good index
-   stays byte-identical until a run actually commits.
-2. After the index commit, the sidecar `lib/bus-stops.meta.json` is written
-   the same way: `format`, `generator`, `generatedAt` (UTC), `source`
-   (parameter-free endpoint), `keyUsed`, `pages`, `records`, `bytes`,
-   `sha256` of exactly the published index bytes.
-3. Interruption between the two commits is honest, not fatal: the index is
-   present but its sidecar is stale or missing, and the validator then
-   reports the state fail-closed or as unknown provenance — never as a
-   proven fresh download.
+1. Everything is validated **before** the previous index changes: index
+   bytes pass the full contract check; the sidecar object passes its own
+   contract check in memory.
+2. `publishAtomic` uses a **unique owned temp file**
+   (`<path>.tmp-<pid>-<random>`, created with `wx`, fsynced, `rename()`d).
+   Unknown pre-existing files (stale or concurrent-run temporaries) are
+   never deleted; only this run's own temp is unlinked on error.
+3. Commit order: index first, sidecar second. Failures up to and including
+   the index rename leave the previous good index untouched; a failure
+   after the index commit is reported as an honest **pair publication
+   failure** (`PAIR-INCOMPLETE`: index present, provenance missing or
+   stale) — never as a completed proven publication.
+4. A fail-closed pair readback then re-reads both published files with
+   bounded reads and re-runs the full consistency checks; any mismatch
+   (`PAIR-MISMATCH`) exits 1 and proves nothing.
+5. Concurrent runs of the *same content* publish safely (unique temps); two
+   runs of *different content* can interleave index/sidecar commits and
+   leave a mismatched pair — the validator reports that as invalid and a
+   clean rerun fixes it. Single-writer per environment remains the
+   documented deployment shape.
 
-## Validator exit codes
+The sidecar is small: `format`, `generator`, `generatedAt` (UTC), `source`
+(the actual, parameter-free base), `keyUsed`, `pages`, `records`, `bytes`,
+`sha256` of exactly the published index bytes.
 
-| Code | Meaning |
+## Provenance classes and validator exit codes
+
+| Provenance | Meaning |
 | --- | --- |
-| 0 | Index shape valid; provenance generated (sidecar matched the bytes exactly) or explicitly unknown (no sidecar). |
-| 1 | Invalid: shape violation, unreadable/oversized index, or a sidecar that exists but fails any consistency rule (format, source without query parameters, `sha256`/`bytes`/`records` mismatch). |
-| 2 | `--require-generation` requested (as `--require-generated`) and provenance is unknown. |
+| `generated` | Sidecar source is the parameter-free official TfL `https://api.tfl.gov.uk` endpoint and all consistency rules hold — this is download proof for those exact bytes. |
+| `synthetic` | Sidecar source is a parameter-free **loopback** `http://` base (exact `127.x.y.z`/`localhost`/`::1` only — no substring or userinfo matches). Valid shape, but it is fixture provenance, not real TfL proof. |
+| `unknown` | No sidecar (e.g. the historical deployed index). Shape-checked only; freshness/completeness is never inferred. |
 
-`--json` prints one machine-readable object for helper integration. The
-historical index currently deployed has no sidecar, so it validates as
-*shape-checked, provenance unknown* — the validator never infers freshness
-or completeness for files it did not observe being generated.
+Exit codes: 0 = valid; 1 = invalid (shape violation, unreadable/oversized
+index, unreadable JSON, or a sidecar that exists but fails any rule —
+mismatched sidecars never pass); 2 = `--require-generated` unmet (unknown
+provenance, or synthetic provenance without the explicit `--allow-synthetic-source`
+flag). `--allow-synthetic-source` is the test-only opt-in; production helper
+integration must use `--require-generated` without it. `--json` prints one
+machine-readable object (includes `sourceClass`).
 
-Synthetic-check accommodations only: the generator accepts
-`TFL_STOPS_BASE_URL` as an http **loopback-only** override, and sidecars
-recording such loopback `http://127.*`/`localhost` sources validate; all
-other provenance sources must be the parameter-free official HTTPS
-endpoint. Production behavior is unchanged.
+Files are read with a bounded regular-file read (open without following
+symlinks where the platform supports it, fstat type/size bound, rejects
+growth or excess, byte count derived from the actual bytes) — never an
+unbounded read after a separate stat.
+
+The live endpoint behaves differently today: the parent's keyless page-1
+read returned **403**, so the real API's paging behavior is **not** validated
+here. Live generation remains an owner-gated operation.
 
 ## Integration requirements for the installed release helpers (not yet adopted)
 
-The currently installed export/build helpers are unchanged and do **not**
-run any of this today; the validator does not currently gate live deploys.
-When adopted, the narrow requirements are:
+The installed export/build helpers are unchanged and do **not** run any of
+this today; the validator does not currently gate live deploys. When
+adopted, the narrow requirements are:
 
 - **Export step:** copy `lib/bus-stops.json` exactly as before, plus
   `lib/bus-stops.meta.json` when present (byte-exact, no rewriting). Refuse
-  a missing or empty source index when the release is expected to carry one;
-  keep the current “regenerate when missing” fallback.
+  a missing or empty source index when the release is expected to carry
+  one; keep the current “regenerate when missing” fallback.
 - **Build step (before activation only):** run
   `node scripts/validate-bus-stops.mjs lib/bus-stops.json --require-generated`
-  in the release directory. Activation must fail closed on any non-zero exit.
-  If regeneration in the sandbox fails or is unproven, keep shipping the
-  carried previous index and say so — never publish an unvalidated or empty
-  index.
-- The validator is offline: no network, no secrets read or emitted.
+  (no `--allow-synthetic-source`) in the release directory. Activation must
+  fail closed on any non-zero exit. If regeneration in the sandbox fails or
+  is unproven, keep shipping the carried previous index and say so — never
+  publish an unvalidated or empty index, and never describe a release as
+  validated that did not pass this step.
+- The validator is offline (no network, no secret reads). After adoption,
+  review `--allow-synthetic-source` absence explicitly in the helper's
+  command line.
 
 ## Synthetic checks
 
-`node scripts/test-bus-index.mjs` runs both real CLIs against 21 local
-`node:http` paging servers: happy paths (keyless + keyed), secret-free
-error/redirect paths (cross-origin refusal, chain cap), oversize, truncated
-bodies, malformed/incomplete/inconsistent paging metadata, within- and
-cross-page duplicates, per-page deadline, unchanged previous good index,
-stale-temporary cleanup, interrupted publication, and the validator's
-shape/sidecar/usage matrix. Each case is SIGKILL-capped at 55 s and children
-run with private `HOME`/`TMPDIR` and a bounded threadpool.
+`node scripts/test-bus-index.mjs` runs both real CLIs against local
+`node:http` paging servers and covers: happy paths (keyless + keyed, with
+exact expected content equality), the header-stall hang (now bounded), a
+TCP-level truncated stream, 5xx and secret-free errors, redirect
+follow/cap and cross-origin refusal, oversize headers/bodies, truncated
+bodies, malformed/incomplete/inconsistent paging metadata, declared-total,
+per-stop field and cumulative-serialized byte caps, duplicate ids, per-page
+deadline, whole-run deadline, invalid configs, hostile (substring-loopback,
+userinfo, fragment, keyed, foreign) bases with proof of zero contacted
+servers, reflected-key leak resistance, unchanged previous good index,
+stale-temporary preservation, concurrent same-content publication, kill
+before commit, and the validator's shape/sidecar/provenance-class/usage
+matrix (65 MiB file cap included). Each case is SIGKILL-capped at 55 s;
+children run with private `HOME`/`TMPDIR` and a bounded threadpool.

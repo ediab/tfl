@@ -288,7 +288,7 @@ await runCase("happy-no-key", async ({ startServer, note }) => {
   const v = await runValidator(ws, ["--json"]);
   assert(v.code === 0, `validator exit ${v.code}`);
   const out = JSON.parse(v.stdout);
-  assert(out.provenance === "generated", "provenance generated");
+  assert(out.provenance === "synthetic", "provenance synthetic (loopback source)");
   note.records = meta.records;
   return { detail: "index+meta validated through real CLIs" };
 });
@@ -514,14 +514,16 @@ await runCase("unchanged-previous-good-index", async ({ startServer }) => {
   return { detail: "same content -> same index bytes, fresh metadata" };
 });
 
-await runCase("stale-tmp-cleaned-and-rerun-ok", async ({ startServer }) => {
+await runCase("stale-temporaries-preserved-and-rerun-ok", async ({ startServer }) => {
   const ws = makeWs({ seedIndex: goodEnvelopeBytes.toString("utf8"), seedMeta: goodMetaText });
-  writeFileSync(join(ws, "lib", "bus-stops.json.tmp-atomic"), "junk");
+  const junkName = "bus-stops.json.tmp-999-deadbeef";
+  writeFileSync(join(ws, "lib", junkName), "junk");
   const server = startServer(pagesHandler(GOOD_PAGES));
   const r = await runGenerator(ws, await server.portPromise);
   assert(r.code === 0, `generator exit ${r.code}: ${r.stderr}`);
-  assert(JSON.parse(wsFile(ws, "lib/bus-stops.json")), "fresh index published over stale tmp");
-  return { detail: "dead-run temporaries removed at start" };
+  assert(JSON.parse(wsFile(ws, "lib/bus-stops.json")), "fresh index published despite stale tmp");
+  assert(wsFile(ws, `lib/${junkName}`) === "junk", "unknown pre-existing file preserved (never deleted)");
+  return { detail: "rerun never blocked or deleted unknown/stale files" };
 });
 
 await runCase("interrupted-before-commit", async ({ startServer }) => {
@@ -595,8 +597,10 @@ await runCase("validator-pair-json-output", async () => {
   const v = await runValidator(ws, ["--json"]);
   assert(v.code === 0, `exit ${v.code}: ${v.stderr}`);
   const out = JSON.parse(v.stdout);
-  assert(out.ok === true && out.provenance === "generated" && out.records === 1, "json fields");
-  return { detail: "--json machine output" };
+  assert(out.ok === true && out.provenance === "generated" && out.sourceClass === "official" && out.records === 1, "json fields");
+  const rg = await runValidator(ws, ["--require-generated"]);
+  assert(rg.code === 0, `official pair satisfies --require-generated (exit ${rg.code})`);
+  return { detail: "--json machine output; official provenance passes the gate" };
 });
 
 await runCase("validator-historical-and-require", async () => {
@@ -690,6 +694,234 @@ await runCase("validator-oversize-file-cap", async () => {
   assert(v.stdout.includes("cap"), "cap message");
   return { detail: "65 MiB index refused before parse" };
 });
+
+// ---------- new boundary fixtures (header-then-stall, truncation, negative
+// hosts, config bounds, whole-run deadline, early caps, reflected keys,
+// concurrent publication, synthetic provenance gating) ----------
+
+await runCase("body-stall-after-headers", async ({ startServer }) => {
+  const ws = makeWs({ seedIndex: goodEnvelopeBytes.toString("utf8"), seedMeta: goodMetaText });
+  const beforeIndex = wsFile(ws, "lib/bus-stops.json");
+  // 200 headers then a partial body, nothing further — the parent-reproduced hang.
+  const server = startServer((req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.write('{"total":1,');
+    // no further writes, no res.end()
+  });
+  const r = await runGenerator(ws, await server.portPromise, { TFL_STOPS_TIMEOUT_MS: "50" });
+  assert(r.code !== 0, "generator must fail, not hang");
+  assert(r.stderr.includes("FETCH-HTTP-TIMEOUT"), `deadline error: ${r.stderr}`);
+  assert(r.ms < 15_000, `bounded run (${r.ms}ms, must not hang indefinitely)`);
+  assert(wsFile(ws, "lib/bus-stops.json") === beforeIndex, "previous index unchanged");
+  return { detail: `stalled body after headers expired in ${r.ms}ms` };
+});
+
+await runCase("body-socket-truncation", async ({ startServer }) => {
+  const ws = makeWs({ seedIndex: goodEnvelopeBytes.toString("utf8"), seedMeta: goodMetaText });
+  const beforeIndex = wsFile(ws, "lib/bus-stops.json");
+  let sockets = [];
+  const server = startServer((req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.write('{"total":1,"pageSize":1,"currentPage":1,"stopPoints":[{"naptanId":"4900');
+    sockets.push(res.socket);
+    setTimeout(() => res.socket.destroy(), 250);
+  });
+  const r = await runGenerator(ws, await server.portPromise, { TFL_STOPS_TIMEOUT_MS: "5000" });
+  assert(r.code !== 0, "generator must fail");
+  assert(r.stderr.includes("FETCH-BODY-READ"), `stream failure surfaced as stable code: ${r.stderr}`);
+  assert(wsFile(ws, "lib/bus-stops.json") === beforeIndex, "previous index unchanged");
+  return { detail: "TCP-level mid-body cut refused" };
+});
+
+await runCase("bad-base-refusals", async ({ startServer }) => {
+  // Live local server that must never be contacted by any rejected base.
+  const local = startServer(() => {});
+  const port = await local.portPromise;
+  const bases = [
+    "http://127.attacker.example/StopPoint/Mode/bus",            // substring loopback
+    `http://attacker@127.0.0.1:${port}/StopPoint/Mode/bus`,       // userinfo
+    `http://127.0.0.1:${port}/StopPoint/Mode/bus#frag`,           // fragment
+    `http://127.0.0.1:${port}/evil?app_key=${TEST_KEY}`,          // query param owned by attacker URL
+    "https://api.tfl.gov.evil/StopPoint/Mode/bus",               // non-official https
+    `https://user:pass@127.0.0.1:${port}/StopPoint/Mode/bus`,     // userinfo https?
+  ];
+  for (const base of bases) {
+    const ws = makeWs();
+    const r = await runChild(ws, ["scripts/download-bus-stops.mjs"], { TFL_STOPS_BASE_URL: base });
+    assert(r.code !== 0, `bad base must fail: ${base}`);
+    assert(r.stderr.includes("BASE-BAD"), `BASE-BAD for: ${base}`);
+    checkNoSecret("bad-base stdout", r.stdout);
+    assert(r.ms < 10_000, `refusal is fast (${r.ms}ms, no connection hangs)`);
+    assert(local.requests.length === 0, "loopback server was never contacted by rejected bases");
+  }
+  return { detail: "6 hostile bases refused without any outbound connection attempt" };
+});
+
+await runCase("bounds-config-rejected", async () => {
+  const badConfigs = [
+    { TFL_STOPS_TIMEOUT_MS: "0" },
+    { TFL_STOPS_TIMEOUT_MS: "300001" },
+    { TFL_STOPS_TOTAL_MS: "0" },
+    { TFL_STOPS_MAX_PAGE_BYTES: "0" },
+    { TFL_STOPS_PAUSE_MS: "abc" },
+    { TFL_STOPS_TIMEOUT_MS: "" },
+  ];
+  for (const bad of badConfigs) {
+    const ws = makeWs();
+    const r = await runChild(ws, ["scripts/download-bus-stops.mjs"], bad);
+    assert(r.code !== 0, `config must be rejected: ${JSON.stringify(bad)}`);
+    assert(r.stderr.includes("CONFIG-BAD"), `CONFIG-BAD for ${JSON.stringify(bad)}`);
+    checkNoSecret("config-reject stderr", r.stderr);
+  }
+  return { detail: "zero/oversized/garbage numeric configs fail closed" };
+});
+
+await runCase("run-deadline-enforced", async ({ startServer }) => {
+  const ws = makeWs();
+  const server = startServer(pagesHandler({
+    1: { body: envelope(1, 5, 1, GOOD_TFL.slice(0, 1)), delayMs: 30 },
+    2: { body: envelope(2, 5, 1, GOOD_TFL.slice(1, 2)), delayMs: 30 },
+    3: { body: envelope(3, 5, 1, GOOD_TFL.slice(2, 3)), delayMs: 30 },
+    4: { body: envelope(4, 5, 1, GOOD_TFL.slice(3, 4)), delayMs: 30 },
+    5: { body: envelope(5, 5, 1, GOOD_TFL.slice(4, 5)), delayMs: 30 },
+  }));
+  const r = await runGenerator(ws, await server.portPromise, { TFL_STOPS_TOTAL_MS: "60" });
+  assert(r.code !== 0 && r.stderr.includes("FETCH-RUN-DEADLINE"), `whole-run deadline: ${r.stderr}`);
+  assert(r.ms < 30_000, `bounded (${r.ms}ms)`);
+  return { detail: "whole-run deadline ends a slow-but-valid stream" };
+});
+
+await runCase("early-total-cap-refusal", async ({ startServer }) => {
+  const ws = makeWs();
+  const server = startServer(pagesHandler({
+    1: { body: JSON.stringify({ total: 100_001, pageSize: 1_000_000, currentPage: 1, stopPoints: [] }) },
+  }));
+  const r = await runGenerator(ws, await server.portPromise);
+  assert(r.code !== 0 && r.stderr.includes("PAGING-OVERSIZE-DECLARED"), `declared total cap: ${r.stderr}`);
+  assert(server.requests.length === 1, "refused before collecting (no further pages)");
+  return { detail: "declared total above record cap refused before collection" };
+});
+
+await runCase("per-stop-limits-refused", async ({ startServer }) => {
+  const badStops = [
+    { naptanId: "BAD-ID!!", commonName: "X", lat: 51.5, lon: -0.1, indicator: "" },  // id pattern
+    { naptanId: "4900T00001", commonName: "y".repeat(600), lat: 51.5, lon: -0.1, indicator: "" }, // name cap
+    { naptanId: "4900T00002", commonName: "Z", lat: 51.5, lon: -0.1, indicator: "i".repeat(600) }, // indicator cap
+    { naptanId: "4900T00003", commonName: "W", lat: 120, lon: -0.1, indicator: "" },               // lat range
+    { naptanId: "4900T00004", commonName: "V", lat: 51.5, lon: -200, indicator: "" },              // lon range
+  ];
+  for (const [i, bad] of badStops.entries()) {
+    const ws = makeWs();
+    const stops = [tflStops(2)[0], bad, tflStops(2)[1]];
+    const server = startServer(pagesHandler({
+      1: { body: envelope(1, 3, 3, stops) },
+    }));
+    const r = await runGenerator(ws, await server.portPromise);
+    assert(r.code !== 0 && r.stderr.includes("PAGING-STOP-LIMITS"), `stop limits (${i}): ${r.stderr}`);
+    assert(!r.stderr.includes(commonOf(bad)), `no reflected field values in error (${i})`);
+  }
+  return { detail: "id/name/indicator/lat/lon limits enforced before storage" };
+});
+
+await runCase("cumulative-byte-cap-refused", async ({ startServer }) => {
+  const ws = makeWs();
+  // Each stop ~1.09KB serialized; total 99k records (~108MB) crosses the
+  // 64MiB index cap midway through page 2, before the 100k record cap.
+  const make = (n, offset) => Array.from({ length: n }, (_, i) => ({
+    naptanId: `4900T${String(offset + i + 1).padStart(6, "0")}`,
+    commonName: "x".repeat(500),
+    lat: 51.5,
+    lon: -0.1,
+    indicator: "y".repeat(511),
+  }));
+  const server = startServer(pagesHandler({
+    1: { body: envelope(1, 99000, 49500, make(49500, 0)) },
+    2: { body: envelope(2, 99000, 49500, make(49500, 49500)) },
+  }));
+  const r = await runGenerator(ws, await server.portPromise, { TFL_STOPS_MAX_PAGE_BYTES: "62914560", TFL_STOPS_TIMEOUT_MS: "30000" }); // 60MiB per page
+  assert(r.code !== 0 && r.stderr.includes("PAGING-OVERSIZE-INDEX"), `byte cap: ${r.stderr}`);
+  const stat = statSync(join(ws, "lib/bus-stops.json"), { throwIfNoEntry: false });
+  assert(stat === undefined, "nothing published after cap refusal");
+  return { detail: "cumulative serialized bound enforced while streaming, not after all pages" };
+});
+
+await runCase("reflected-key-leak-resistance", async ({ startServer }) => {
+  // Sub-case 1: hostile paging metadata reflects the key as currentPage.
+  const ws = makeWs();
+  const server = startServer(pagesHandler({
+    1: { body: JSON.stringify({ total: 1, pageSize: 1, currentPage: TEST_KEY, stopPoints: tflStops(1) }) },
+  }));
+  const r = await runGenerator(ws, await server.portPromise, { TFL_API_KEY: TEST_KEY });
+  assert(r.code !== 0 && r.stderr.includes("PAGING-CURRENTPAGE-BAD"), `stable currentPage error: ${r.stderr}`);
+  checkNoSecret("reflected-currentPage stderr", r.stderr);
+  checkNoSecret("reflected-currentPage stdout", r.stdout);
+
+  // Sub-case 2: hostile page data reflects the key as a commonName and a
+  // duplicate id; errors must stay stable (no ids, no names).
+  const ws2 = makeWs();
+  const idToEcho = "490000123A";
+  const reflectName = TEST_KEY;
+  const server2 = startServer(pagesHandler({
+    1: { body: envelope(1, 3, 3, [
+      { naptanId: idToEcho, commonName: "A", lat: 51.5, lon: -0.1, indicator: "" },
+      { naptanId: idToEcho, commonName: reflectName, lat: 51.6, lon: -0.2, indicator: "" },
+      tflStops(1)[0],
+    ]) },
+  }));
+  const r2 = await runGenerator(ws2, await server2.portPromise, { TFL_API_KEY: TEST_KEY });
+  assert(r2.code !== 0 && r2.stderr.includes("PAGING-DUPLICATE"), `stable duplicate error: ${r2.stderr}`);
+  checkNoSecret("reflected-duplicate stderr", r2.stderr);
+  checkNoSecret("reflected-duplicate stdout", r2.stdout);
+  assert(!r2.stderr.includes(idToEcho), "duplicate error does not echo the id");
+  assert(!r2.stderr.includes("A, B, C") , "sanity");
+  return { detail: "response values (key, id, name) never enter error output" };
+});
+
+await runCase("concurrent-same-content-publication", async ({ startServer }) => {
+  const ws = makeWs();
+  const server = startServer(pagesHandler(GOOD_PAGES));
+  const port = await server.portPromise;
+  const genEnv = (pause) => ({
+    TFL_STOPS_BASE_URL: `http://127.0.0.1:${port}/StopPoint/Mode/bus`,
+    TFL_STOPS_PAUSE_MS: String(pause),
+  });
+  const children = [
+    new Promise((resolve) => {
+      const c = spawn(process.execPath, ["scripts/download-bus-stops.mjs"], { cwd: ws, env: { ...baseEnv(ws), ...genEnv(5) }, stdio: ["ignore", "pipe", "pipe"] });
+      let e = ""; c.stderr.on("data", (d) => (e += d)); c.on("close", (code) => resolve({ code, stderr: e }));
+    }),
+    new Promise((resolve) => {
+      const c = spawn(process.execPath, ["scripts/download-bus-stops.mjs"], { cwd: ws, env: { ...baseEnv(ws), ...genEnv(60) }, stdio: ["ignore", "pipe", "pipe"] });
+      let e = ""; c.stderr.on("data", (d) => (e += d)); c.on("close", (code) => resolve({ code, stderr: e }));
+    }),
+  ];
+  const [a, b] = await Promise.all(children);
+  assert(a.code === 0, `first generator exit ${a.code}: ${a.stderr}`);
+  assert(b.code === 0, `second generator exit ${b.code}: ${b.stderr}`);
+  const leftovers = readdirSync(join(ws, "lib")).filter((f) => f.includes(".tmp-"));
+  assert(leftovers.length === 0, `no staging conflicts (${leftovers})`);
+  const v = await runValidator(ws);
+  assert(v.code === 0, `validator ok after concurrent publication (exit ${v.code})`);
+  return { detail: "unique owned temporaries: concurrent runs publish a consistent pair" };
+});
+
+await runCase("validator-synthetic-gating", async ({ startServer }) => {
+  const ws = makeWs();
+  const server = startServer(pagesHandler(GOOD_PAGES));
+  const g = await runGenerator(ws, await server.portPromise);
+  assert(g.code === 0, `generator exit ${g.code}: ${g.stderr}`);
+  const def = await runValidator(ws, ["--json"]);
+  assert(def.code === 0 && JSON.parse(def.stdout).provenance === "synthetic", "default: valid, labeled synthetic");
+  const rg = await runValidator(ws, ["--require-generated"]);
+  assert(rg.code === 2, `synthetic refused as generated-proof (exit ${rg.code})`);
+  const allow = await runValidator(ws, ["--require-generated", "--allow-synthetic-source"]);
+  assert(allow.code === 0, `explicit test-only opt-in accepted (exit ${allow.code})`);
+  return { detail: "loopback sidecar is synthetic provenance; require-generated refuses without opt-in" };
+});
+
+function commonOf(bad) {
+  return (bad.commonName ?? "").slice(0, 12) + (bad.indicator ?? "").slice(0, 12);
+}
 
 // ---------- summary ----------
 
