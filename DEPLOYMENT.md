@@ -34,8 +34,14 @@ The application runs as a dedicated unprivileged system user with no login shell
 container access. It reads the sealed release read-only and may write only its cache and home
 directories; systemd filesystem, privilege and namespace hardening is enabled.
 
-`lib/bus-stops.json` is generated data (see README). Deploys carry the validated index into the new
-release, or regenerate it in the build sandbox when it is missing.
+`lib/bus-stops.json` is generated data (see README and
+[scripts/BUS-INDEX.md](scripts/BUS-INDEX.md)). Deploys carry the generated index into the new
+release, or regenerate it in the build sandbox when it is missing. The index's strict-shape
+validator and provenance sidecar now exist in the repo, but the installed helper does **not** run
+them yet — running the validator before activation (`node scripts/validate-bus-stops.mjs
+lib/bus-stops.json --require-generated`, fail-closed) is the narrow remaining integration
+requirement for the installed helper, and until then the release must not be described as
+"validated".
 
 ## Guard on the legacy manual path
 

@@ -34,8 +34,15 @@ don't return live arrivals, so every stop appears to have no arrivals. Generate 
 index once per environment (deploy does this automatically if the file is missing):
 
 ```bash
-TFL_API_KEY=xxx node scripts/download-bus-stops.mjs
+TFL_API_KEY=xxx node scripts/download-bus-stops.mjs   # the key may be omitted
+node scripts/validate-bus-stops.mjs                    # check shape + provenance
 ```
+
+The generator is bounded (strict paging validation, caps on time/size/pages,
+secret-free errors, atomic publication) and writes a small provenance sidecar
+(`lib/bus-stops.meta.json`) describing exactly the published index bytes. See
+[scripts/BUS-INDEX.md](scripts/BUS-INDEX.md) for the contract and the synthetic
+checks (`node scripts/test-bus-index.mjs`).
 
 ## Architecture
 

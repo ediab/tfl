@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "deploy": "bash ./scripts/deploy.sh",
-    "test:deploy": "bash ./scripts/test-deploy.sh"
+    "test:deploy": "bash ./scripts/test-deploy.sh",
+    "test:bus-index": "node scripts/test-bus-index.mjs"
   },
   "dependencies": {
     "lucide-react": "^1.8.0",
