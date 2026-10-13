@@ -33,8 +33,9 @@ zero, negative, non-integer or above-clamp value exits `CONFIG-BAD`):
   stream failure, completion). Streamed failures surface as stable
   value-free codes (`FETCH-HTTP-TIMEOUT`, `FETCH-BODY-READ`,
   `FETCH-ENCODING-BAD`, `FETCH-PARSE`).
-- Whole run: a fixed run deadline (default 600 s, clamp 1–1800 s) is checked
-  between pages, in addition to the per-page deadline (default 10 s, clamp
+- Whole run: a fixed run deadline (default 600 s, clamp 1–1800 s) bounds
+  in-flight requests/body reads, retries and pauses, and is checked during
+  collection and before publication, in addition to the per-page deadline (default 10 s, clamp
   1–300 s) and the per-page body cap (default 32 MiB, ≤ the index cap).
 - Paging: `total`, `pageSize`, `currentPage` and the exact per-page count
   (`pageSize`, last page `total − (pages−1)·pageSize`) are required,
@@ -83,7 +84,7 @@ The sidecar is small: `format`, `generator`, `generatedAt` (UTC), `source`
 
 | Provenance | Meaning |
 | --- | --- |
-| `generated` | Sidecar source is the parameter-free official TfL `https://api.tfl.gov.uk` endpoint and all consistency rules hold — this is download proof for those exact bytes. |
+| `generated` | A matching sidecar records generation from the parameter-free official TfL endpoint. This authenticates neither download history nor freshness; those require the trusted producer's actual run evidence. |
 | `synthetic` | Sidecar source is a parameter-free **loopback** `http://` base (exact `127.x.y.z`/`localhost`/`::1` only — no substring or userinfo matches). Valid shape, but it is fixture provenance, not real TfL proof. |
 | `unknown` | No sidecar (e.g. the historical deployed index). Shape-checked only; freshness/completeness is never inferred. |
 

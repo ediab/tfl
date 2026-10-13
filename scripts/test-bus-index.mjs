@@ -11,7 +11,7 @@
 // bounded threadpool; each case is killed at 55 s (below the 60 s cap).
 // Exits non-zero when any case fails.
 
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import http from "node:http";
@@ -922,6 +922,55 @@ await runCase("validator-synthetic-gating", async ({ startServer }) => {
 function commonOf(bad) {
   return (bad.commonName ?? "").slice(0, 12) + (bad.indicator ?? "").slice(0, 12);
 }
+
+await runCase("official-default-cli-with-injected-fetch", async () => {
+  const ws = makeWs();
+  // Replace only the external HTTP boundary; exercise the real default CLI
+  // without TFL_STOPS_BASE_URL and without contacting the live API.
+  const hook = join(ws, "official-fetch.mjs");
+  writeFileSync(hook, `
+    globalThis.fetch = async (input) => {
+      const u = new URL(input);
+      if (u.origin !== 'https://api.tfl.gov.uk' || u.pathname !== '/StopPoint/Mode/bus' || u.searchParams.get('page') !== '1') throw new Error('unexpected endpoint');
+      return new Response(${JSON.stringify(envelope(1, 1, 1, GOOD_TFL.slice(0, 1)))}, {status:200, headers:{'content-type':'application/json'}});
+    };
+  `);
+  const g = await runChild(ws, ["--import", hook, "scripts/download-bus-stops.mjs"]);
+  assert(g.code === 0, `official default path: ${g.stderr}`);
+  const meta = JSON.parse(wsFile(ws, "lib/bus-stops.meta.json"));
+  assert(meta.source === "https://api.tfl.gov.uk/StopPoint/Mode/bus", "default source recorded");
+  const v = await runValidator(ws, ["--require-generated"]);
+  assert(v.code === 0, `recorded official source: ${v.stderr}`);
+  return { detail: "real default CLI succeeds at injected external HTTP boundary; no live provenance claim" };
+});
+
+await runCase("run-deadline-covers-in-flight-body", async ({ startServer }) => {
+  const ws = makeWs();
+  const server = startServer((req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.write('{"total":1,');
+  });
+  const r = await runGenerator(ws, await server.portPromise, { TFL_STOPS_TOTAL_MS: "120", TFL_STOPS_TIMEOUT_MS: "30000" });
+  assert(r.code !== 0 && r.stderr.includes("FETCH-RUN-DEADLINE"), `in-flight deadline: ${r.stderr}`);
+  assert(r.ms < 2500, `whole-run deadline must precede 30s page deadline (${r.ms}ms)`);
+  assert(server.requests.length === 1, "no retry after run deadline");
+});
+
+await runCase("run-deadline-covers-retry-pause", async ({ startServer }) => {
+  const ws = makeWs();
+  const server = startServer((req, res) => { res.writeHead(503); res.end(); });
+  const r = await runGenerator(ws, await server.portPromise, { TFL_STOPS_TOTAL_MS: "120" });
+  assert(r.code !== 0 && r.stderr.includes("FETCH-RUN-DEADLINE"), `retry deadline: ${r.stderr}`);
+  assert(server.requests.length === 1, "deadline prevents second request");
+});
+
+await runCase("validator-fifo-refuses-without-writer", async () => {
+  const ws = makeWs();
+  execFileSync("mkfifo", [join(ws, "lib/bus-stops.json")]);
+  const v = await runValidator(ws);
+  assert(v.code === 1 && v.stdout.includes("READ-NOT-REGULAR"), `FIFO refusal: ${v.stdout} ${v.stderr}`);
+  assert(v.ms < 2500, "opening a FIFO must not wait for a writer");
+});
 
 // ---------- summary ----------
 

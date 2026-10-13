@@ -49,7 +49,7 @@ export function isLoopbackHostname(hostname) {
 export function classifyProvenanceSource(u) {
   if (u.username !== "" || u.password !== "" || u.hash !== "" || [...u.searchParams.keys()].length > 0) return null;
   if (u.pathname !== BUS_ENDPOINT_PATH) return null;
-  if (u.protocol === "https:" && u.hostname === API_HOST) return "official";
+  if (u.origin === "https://api.tfl.gov.uk") return "official";
   if (u.protocol === "http:" && isLoopbackHostname(u.hostname)) return "synthetic";
   return null;
 }
@@ -158,6 +158,7 @@ export function sha256OfBytes(bytes) {
 export function readBoundedFile(path, cap) {
   let flags = constants.O_RDONLY;
   if (constants.O_NOFOLLOW !== undefined) flags |= constants.O_NOFOLLOW;
+  if (constants.O_NONBLOCK !== undefined) flags |= constants.O_NONBLOCK;
   let fd;
   try {
     fd = openSync(path, flags);

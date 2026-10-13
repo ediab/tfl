@@ -112,7 +112,8 @@ function resolveBase() {
   } catch {
     return null;
   }
-  return classifyProvenanceSource(u) === "synthetic" ? u : null;
+  const sourceClass = classifyProvenanceSource(u);
+  return (base === API_BASE && sourceClass === "official") || sourceClass === "synthetic" ? u : null;
 }
 
 async function releaseBody(res) {
@@ -126,13 +127,18 @@ async function releaseBody(res) {
 // read, so a server that stalls after sending headers expires the deadline
 // instead of hanging. Response bodies are released/cancelled on every exit
 // path (redirect, non-2xx, oversize, error, completion).
-async function fetchJsonBounded(urlString, apiOrigin, apiProtocol) {
+async function fetchJsonBounded(urlString, apiOrigin, apiProtocol, runDeadline) {
   const ac = new AbortController();
   let aborted = false;
+  let reader;
+  const remaining = runDeadline - performance.now();
+  if (remaining <= 0) return { error: true, code: "FETCH-RUN-DEADLINE", why: "whole-run deadline exhausted" };
+  const runLimited = remaining <= PAGE_TIMEOUT_MS;
+  const timeoutError = () => ({ error: true, code: runLimited ? "FETCH-RUN-DEADLINE" : "FETCH-HTTP-TIMEOUT", why: "request did not complete within its deadline" });
   const timer = setTimeout(() => {
     aborted = true;
     ac.abort();
-  }, PAGE_TIMEOUT_MS);
+  }, Math.min(PAGE_TIMEOUT_MS, remaining));
   try {
     let url = urlString;
     let redirects = 0;
@@ -146,7 +152,7 @@ async function fetchJsonBounded(urlString, apiOrigin, apiProtocol) {
         res = await fetch(parsed, { redirect: "manual", signal: ac.signal });
       } catch (e) {
         if (aborted || e?.name === "AbortError") {
-          return { error: true, code: "FETCH-HTTP-TIMEOUT", why: "a page did not complete within the page deadline" };
+          return timeoutError();
         }
         return { error: true, code: e?.cause?.code ?? "FETCH-NET", why: "network error" };
       }
@@ -175,7 +181,7 @@ async function fetchJsonBounded(urlString, apiOrigin, apiProtocol) {
       if (!res.body) {
         return { error: true, code: "FETCH-BODY-NONE", why: "response has no body" };
       }
-      const reader = res.body.getReader();
+      reader = res.body.getReader();
       const decoder = new TextDecoder("utf-8", { fatal: true });
       let text = "";
       let received = 0;
@@ -197,7 +203,7 @@ async function fetchJsonBounded(urlString, apiOrigin, apiProtocol) {
         // Streamed body failed (connection cut, abort): stable, value-free.
         await reader.cancel().catch(() => {});
         if (aborted) {
-          return { error: true, code: "FETCH-HTTP-TIMEOUT", why: "body did not complete within the page deadline" };
+          return timeoutError();
         }
         return { error: true, code: "FETCH-BODY-READ", why: "response body consumption failed" };
       }
@@ -215,6 +221,10 @@ async function fetchJsonBounded(urlString, apiOrigin, apiProtocol) {
       return { error: false, data, bytes: received };
     }
   } finally {
+    if (reader) {
+      try { await reader.cancel(); } catch {}
+      try { reader.releaseLock(); } catch {}
+    }
     clearTimeout(timer);
   }
 }
@@ -311,7 +321,15 @@ async function main() {
   if (process.argv.length > 2) {
     failExit("USAGE-FLAGS", "this generator takes no arguments; configure via TFL_API_KEY / TFL_STOPS_* env");
   }
-  const runStartedAt = Date.now();
+  const runDeadline = performance.now() + RUN_DEADLINE_MS;
+  function checkRunDeadline() {
+    if (performance.now() >= runDeadline) failExit("FETCH-RUN-DEADLINE", "whole-run deadline exhausted");
+  }
+  async function boundedPause(ms) {
+    checkRunDeadline();
+    await pause(Math.min(ms, runDeadline - performance.now()));
+    checkRunDeadline();
+  }
   const apiBase = resolveBase();
   if (!apiBase) {
     failExit("BASE-BAD", "endpoint must be the official TfL https URL or a parameter-free exact-loopback http URL (no userinfo, fragment or query) for synthetic checks");
@@ -329,9 +347,7 @@ async function main() {
   let runningBytes = 0; // exact serialized byte cost of stored stops (without brackets/commas)
 
   for (let page = 1; ; page++) {
-    if (Date.now() - runStartedAt > RUN_DEADLINE_MS) {
-      failExit("FETCH-RUN-DEADLINE", `run exceeded its ${RUN_DEADLINE_MS}ms whole-run deadline`);
-    }
+    checkRunDeadline();
     const url = new URL(apiBase);
     url.searchParams.set("page", String(page));
     if (apiKey) url.searchParams.set("app_key", apiKey);
@@ -339,13 +355,15 @@ async function main() {
     let res = null;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS_PER_PAGE; attempt++) {
       log(`page ${page} attempt ${attempt}/${MAX_ATTEMPTS_PER_PAGE}...`);
-      res = await fetchJsonBounded(url.toString(), apiBase.origin, apiBase.protocol);
+      checkRunDeadline();
+      res = await fetchJsonBounded(url.toString(), apiBase.origin, apiBase.protocol, runDeadline);
+      checkRunDeadline();
       if (!res.error) break;
       if (!isTransient(res.code) || attempt === MAX_ATTEMPTS_PER_PAGE) {
         failExit(res.code, res.why);
       }
       log(`transient ${res.code}; retrying in ${RETRY_PAUSE_MS}ms`);
-      await pause(RETRY_PAUSE_MS);
+      await boundedPause(RETRY_PAUSE_MS);
     }
 
     const env2 = validateEnvelope(res.data, page, firstTotal, firstPageSize);
@@ -371,6 +389,7 @@ async function main() {
     }
 
     for (let i = 0; i < env2.stopPoints.length; i++) {
+      checkRunDeadline();
       const st = normalizeStop(env2.stopPoints[i]);
       if (!st) {
         failExit("PAGING-STOP-BAD", `malformed stop entry at page ${page} position ${i}`);
@@ -396,7 +415,7 @@ async function main() {
     log(`page ${page}: ${env2.stopPoints.length} stops, cumulative ${stops.length}`);
 
     if (isLast) break;
-    await pause(INTERPAGE_MS);
+    await boundedPause(INTERPAGE_MS);
   }
 
   if (stops.length !== firstTotal) {
@@ -407,6 +426,7 @@ async function main() {
   stops.sort((a, b) => collator.compare(a.name, b.name) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 
   const indexText = JSON.stringify(stops);
+  checkRunDeadline();
   // All pre-commit validation happens BEFORE the previous index is changed.
   const check = checkIndexBytes(indexText);
   if (!check.ok) failExit("GENERATED-BAD", `generated index failed self-check ${check.code}`);
@@ -430,6 +450,7 @@ async function main() {
 
   // Commit 1: the index. Failures up to and including this point left the
   // previous good index untouched (atomic rename is the commit point).
+  checkRunDeadline();
   const pub = publishAtomic(INDEX_FILE, indexText);
   if (pub.error) failExit(pub.code, `index publication failed: ${pub.why}`);
 

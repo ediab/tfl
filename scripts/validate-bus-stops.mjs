@@ -12,8 +12,8 @@
 // bytes). When the provenance sidecar (<path>.meta.json) exists it must
 // match the index bytes exactly (sha256, size, record count, src rules);
 // anything else is invalid. Provenance classes:
-//   "generated"  official parameter-free TfL https endpoint — real download
-//                proof for this byte content.
+//   "generated"  a matching sidecar records the official TfL endpoint;
+//                offline validation does not authenticate download history.
 //   "synthetic"  loopback http base (synthetic checks). NOT accepted by
 //                --require-generated unless --allow-synthetic-source is
 //                also passed; a loopback sidecar is not real TfL provenance.
@@ -23,7 +23,7 @@
 // Exit codes: 0 valid · 1 invalid · 2 valid shape but provenance
 // requirement unmet (missing/unknown, or synthetic without the opt-in flag).
 
-import { readFileSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import { exit } from "node:process";
 import {
   checkIndexBytes,
@@ -123,11 +123,11 @@ if (metaExists) {
   result.source = meta.source;
   result.keyUsed = meta.keyUsed;
   note(m.sourceClass === "official"
-    ? `provenance: generated ${meta.generatedAt} by ${meta.generator} (${meta.pages} pages, keyUsed ${meta.keyUsed}, source ${meta.source})`
+    ? `provenance: recorded generation ${meta.generatedAt} by ${meta.generator} (${meta.pages} pages, keyUsed ${meta.keyUsed}, source ${meta.source}); download history not authenticated offline`
     : `provenance: synthetic ${meta.generatedAt} by ${meta.generator} (${meta.pages} pages, keyUsed ${meta.keyUsed}, synthetic source — not official TfL provenance)`);
   if (requireGenerated && m.sourceClass !== "official" && !allowSyntheticSource) {
     result.provenanceUnmet = true;
-    note("requirement: --require-generated but provenance is not official-TfL download proof (exit 2)");
+    note("requirement: --require-generated but an official-TfL generation record is absent (exit 2)");
   }
 } else {
   result.provenance = "unknown";
