@@ -333,7 +333,12 @@ async function main() {
   }
   async function boundedPause(ms) {
     checkRunDeadline();
-    await pause(Math.min(ms, runDeadline - performance.now()));
+    const remaining = runDeadline - performance.now();
+    const truncated = remaining <= ms;
+    await pause(Math.min(ms, remaining));
+    // JS timers can wake before a fractional deadline. A truncated backoff
+    // has exhausted its budget regardless; never issue another request.
+    if (truncated) failExit("FETCH-RUN-DEADLINE", "whole-run deadline exhausted");
     checkRunDeadline();
   }
   const apiBase = resolveBase();
