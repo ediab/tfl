@@ -1,0 +1,22 @@
+#!/bin/bash
+# Proposed replacement for /usr/local/libexec/tfl-build. Not auto-installed.
+set -euo pipefail
+umask 022
+SHA="${1:-}"; REL="${2:-}"
+[[ "$#" == 2 && "$SHA" =~ ^[0-9a-f]{40}$ && "$REL" == "/var/lib/tfl/releases/$SHA" ]] || exit 2
+cd "$REL"
+if [[ ! -s lib/bus-stops.json ]]; then
+  # Explicit clean generator configuration. Native builds use the approved keyless endpoint.
+  env -u TFL_STOPS_BASE_URL -u TFL_API_KEY node scripts/download-bus-stops.mjs
+fi
+node scripts/validate-bus-stops.mjs lib/bus-stops.json --require-generated
+npm ci --include=dev
+npm run build
+# Refuse build-time changes to the generation pair before any activation marker.
+node scripts/validate-bus-stops.mjs lib/bus-stops.json --require-generated
+rm -rf -- .next/cache
+ln -sfn /var/lib/tfl/cache .next/cache
+find -P . -xdev \( -type f -o -type d \) -exec chmod go-w {} +
+[[ -f .next/BUILD_ID ]] || exit 4
+touch .release-complete
+echo "tfl-build: ok $SHA"

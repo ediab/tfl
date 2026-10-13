@@ -1,0 +1,19 @@
+#!/bin/bash
+# Proposed replacement for /usr/local/libexec/tfl-export. Not auto-installed.
+set -euo pipefail
+umask 022
+SHA="${1:-}"; REL="${2:-}"
+[[ "$#" == 2 && "$SHA" =~ ^[0-9a-f]{40}$ && "$REL" == "/var/lib/tfl/releases/$SHA" ]] || exit 2
+CHECKOUT=/home/diab/apps/tfl
+resolved=$(GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_GLOBAL=/dev/null \
+  git -c safe.directory="$CHECKOUT" -c core.hooksPath=/dev/null -c core.fsmonitor=false -c credential.helper= \
+  -C "$CHECKOUT" rev-parse --verify "${SHA}^{commit}") || exit 3
+[[ "$resolved" == "$SHA" ]] || exit 3
+git -c safe.directory="$CHECKOUT" -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+  -C "$CHECKOUT" archive --format=tar "$SHA" | tar -x -C "$REL"
+# Historical indexes without a generation record are not accepted as generated.
+# If no complete pair exists, the build helper must generate and validate one.
+if [[ -e "$CHECKOUT/lib/bus-stops.json" && -e "$CHECKOUT/lib/bus-stops.meta.json" ]]; then
+  node "$REL/scripts/stage-bus-index.mjs" "$CHECKOUT/lib/bus-stops.json" "$REL/lib"
+fi
+echo "tfl-export: ok $SHA"

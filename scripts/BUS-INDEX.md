@@ -142,3 +142,24 @@ stale-temporary preservation, concurrent same-content publication, kill
 before commit, and the validator's shape/sidecar/provenance-class/usage
 matrix (65 MiB file cap included). Each case is SIGKILL-capped at 55 s;
 children run with private `HOME`/`TMPDIR` and a bounded threadpool.
+
+## Native helper adoption (prepared, not installed)
+
+`ops/native/tfl-export` and `ops/native/tfl-build` are proposed replacements
+for the existing libexec helpers. They retain the native service, release
+location, runtime restrictions and root sealing/activation owner. Export
+copies a complete official-source generation pair through
+`scripts/stage-bus-index.mjs`, using bounded reads and byte readback. It refuses
+mismatched or synthetic provenance and existing destinations. Historical
+index-only input is not copied; the build must generate a new keyless pair.
+The build validates `--require-generated` both before npm work and before the
+activation marker. A sidecar is a generation record, not authenticated history.
+
+`node scripts/test-stage-bus-index.mjs` exercises the real staging CLI:
+matching bytes, absent sidecar, changed data, synthetic source, source and
+destination symlinks, protected existing files, partial pair cleanup, FIFO.
+Helper shell syntax is checked; actual transient export/build, Next build,
+installed helper compatibility and real endpoint paging are NOT proved by
+these tests. Real keyless generation must succeed before operator installation
+or release acceptance. Parent owns reviewed installation, scoped restart and
+rollback. No helper file is automatically installed by this branch.

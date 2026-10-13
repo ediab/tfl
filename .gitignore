@@ -45,3 +45,4 @@ next-env.d.ts
 
 # superpowers brainstorm sessions
 .superpowers/
+/lib/bus-stops.meta.json
