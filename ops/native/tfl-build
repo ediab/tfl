@@ -12,6 +12,10 @@ fi
 node scripts/validate-bus-stops.mjs lib/bus-stops.json --require-generated
 npm ci --include=dev
 npm run build
+# Build tools have no role in the serving process. Keep only the locked runtime
+# closure before sealing the release; do not execute package lifecycle scripts.
+npm prune --omit=dev --ignore-scripts --no-audit
+node scripts/check-runtime-dependencies.mjs
 # Refuse build-time changes to the generation pair before any activation marker.
 node scripts/validate-bus-stops.mjs lib/bus-stops.json --require-generated
 rm -rf -- .next/cache

@@ -14,7 +14,7 @@ concurrency:
 jobs:
   source:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -30,3 +30,12 @@ jobs:
           timeout --signal=TERM --kill-after=5s 15s node scripts/test-stage-bus-index.mjs
           bash -n ops/native/tfl-export ops/native/tfl-build
           for file in scripts/download-bus-stops.mjs scripts/validate-bus-stops.mjs scripts/lib/bus-stops-schema.mjs scripts/stage-bus-index.mjs; do node --check "$file"; done
+      - name: Verify production build and serving dependency closure
+        run: |
+          set -euo pipefail
+          npm ci --no-audit
+          npm run lint
+          npm run test:deploy
+          npm run build
+          npm prune --omit=dev --ignore-scripts --no-audit
+          node scripts/check-runtime-dependencies.mjs

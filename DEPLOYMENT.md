@@ -20,7 +20,10 @@ The helper performs, in order:
 4. **Build** — a second transient systemd unit runs as the same unprivileged user with a private
    temporary directory and a per-run scratch directory. It installs dependencies (including build
    dev-dependencies) and builds the application. The running service keeps using the previous
-   release until activation.
+   release until activation. After the build, `npm prune --omit=dev
+   --ignore-scripts --no-audit` removes build tools from the serving closure.
+   The runtime dependency check must pass before sealing. Hosted verification
+   checks the same production build and dependency closure before release.
 5. **Seal** — fail-closed checks reject special files, set-id or group/other-writable modes,
    cross-tree hardlinks and incomplete walks. Root then seals the release without following
    symlinks and re-verifies that every entry is root-owned and hazard-free.
@@ -47,8 +50,9 @@ requirement for the installed helper, and until then the release must not be des
 ## Guard on the legacy manual path
 
 The legacy manual deployment helper rejects TFL deploys before it touches the checkout and points to
-the new entry point. Do not use manual deploy scripts for this application; use the push-triggered
-workflow.
+the new entry point. Do not use repository manual deploy scripts for this application. After the
+exact main revision passes the hosted checks, use the root-owned operator entry
+point `/usr/local/sbin/tfl-deploy-inhibit`.
 
 ## Recovery
 
@@ -63,7 +67,8 @@ workflow.
 
 ## Verification after a deploy
 
-- The workflow run completes successfully and its commit matches the running release.
+- The input-check workflow completes successfully for the exact main revision; after
+  the operator release, its commit matches the running release.
 - Check the application over loopback and public HTTPS: page, static assets, arrivals API, indexed
   bus search, invalid inputs and image optimizer behavior.
 - Confirm the service identity and sandbox state, and that no unrelated services restarted.
