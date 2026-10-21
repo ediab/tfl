@@ -9,7 +9,9 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --include=dev
 COPY . .
-RUN node scripts/download-bus-stops.mjs \
+# Cache-busted pages come from TfL's origin and take 10-15 s each (33 pages), past the script's
+# 10 s per-page default, so allow 60 s per page and 25 min for the whole run.
+RUN TFL_STOPS_TIMEOUT_MS=60000 TFL_STOPS_TOTAL_MS=1500000 node scripts/download-bus-stops.mjs \
  && node scripts/validate-bus-stops.mjs lib/bus-stops.json --require-generated \
  && npm run build \
  && npm prune --omit=dev

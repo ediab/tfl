@@ -356,11 +356,16 @@ async function main() {
   let expectedPages = null;
   let pagesFetched = 0;
   let runningBytes = 0; // exact serialized byte cost of stored stops (without brackets/commas)
+  // TfL's CDN caches each page separately for days, so pages refreshed at different times come
+  // from different snapshots and overlap at the boundaries (PAGING-DUPLICATE). One per-run value
+  // makes every page a cache miss, so the whole run reads a single fresh snapshot from origin.
+  const cacheBust = String(Date.now());
 
   for (let page = 1; ; page++) {
     checkRunDeadline();
     const url = new URL(apiBase);
     url.searchParams.set("page", String(page));
+    url.searchParams.set("cb", cacheBust);
     if (apiKey) url.searchParams.set("app_key", apiKey);
 
     let res = null;
