@@ -195,7 +195,7 @@ function ArrivalsBoard({ stationId, stationName }: { stationId: string; stationN
         </div>
       )}
 
-      {!loading && groups.length > 0 && (
+      {!loading && !error && groups.length > 0 && (
         <div>
           {groups.map((line, li) => (
             <div key={line.lineId} className={li > 0 ? "border-t border-neutral-200 dark:border-neutral-800" : ""}>

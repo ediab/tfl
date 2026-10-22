@@ -142,7 +142,7 @@ function BusArrivalsBoard({ stop }: { stop: BusStop }) {
         </div>
       )}
 
-      {!loading && groups.length > 0 && (
+      {!loading && !error && groups.length > 0 && (
         <div>
           {groups.map((route, ri) => (
             <div
@@ -204,7 +204,9 @@ export default function BusesTab() {
     }
   });
   const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchAbortRef = useRef<AbortController | null>(null);
 
   // Persist selected stop
   useEffect(() => {
@@ -218,22 +220,40 @@ export default function BusesTab() {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     const q = query.trim();
     if (!q) return;
+
+    const controller = new AbortController();
+    searchAbortRef.current = controller;
+
     debounceRef.current = setTimeout(async () => {
       try {
-        const res = await fetch(`/api/bus-stops/search?q=${encodeURIComponent(q)}`);
-        if (res.ok) setResults(await res.json());
-        else setResults([]);
+        const res = await fetch(`/api/bus-stops/search?q=${encodeURIComponent(q)}`, {
+          signal: controller.signal,
+        });
+        if (!res.ok) throw new Error(`Search failed with status ${res.status}`);
+        const stops: BusStop[] = await res.json();
+        if (controller.signal.aborted) return;
+        setResults(stops);
+        setSearchError(null);
+      } catch {
+        if (controller.signal.aborted) return;
+        setResults([]);
+        setSearchError("could not search bus stops — try again");
       } finally {
-        setSearching(false);
+        if (!controller.signal.aborted) setSearching(false);
       }
     }, 300);
+
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
+      controller.abort();
     };
   }, [query]);
 
   function updateQuery(nextQuery: string) {
+    searchAbortRef.current?.abort();
+    searchAbortRef.current = null;
     setQuery(nextQuery);
+    setSearchError(null);
     if (!nextQuery.trim()) {
       setResults([]);
       setSearching(false);
@@ -243,15 +263,23 @@ export default function BusesTab() {
   }
 
   function selectStop(stop: BusStop) {
+    searchAbortRef.current?.abort();
+    searchAbortRef.current = null;
     setSelectedStop(stop);
     setQuery("");
     setResults([]);
+    setSearchError(null);
+    setSearching(false);
   }
 
   function clearStop() {
+    searchAbortRef.current?.abort();
+    searchAbortRef.current = null;
     setSelectedStop(null);
     setQuery("");
     setResults([]);
+    setSearchError(null);
+    setSearching(false);
   }
 
   return (
@@ -287,10 +315,7 @@ export default function BusesTab() {
               {query && (
                 <button
                   type="button"
-                  onClick={() => {
-                    updateQuery("");
-                    setResults([]);
-                  }}
+                  onClick={() => updateQuery("")}
                   className="text-neutral-400 dark:text-neutral-700 hover:text-neutral-600 dark:hover:text-neutral-500 text-[10px] font-mono uppercase tracking-widest"
                 >
                   clear
@@ -333,7 +358,13 @@ export default function BusesTab() {
             </ul>
           )}
 
-          {!searching && query.trim() && results.length === 0 && (
+          {!searching && searchError && (
+            <p role="alert" className="py-4 text-xs font-mono text-red-600 dark:text-red-500">
+              {searchError}
+            </p>
+          )}
+
+          {!searching && !searchError && query.trim() && results.length === 0 && (
             <p className="py-4 text-xs font-mono text-neutral-400 dark:text-neutral-700">
               no stops found
             </p>

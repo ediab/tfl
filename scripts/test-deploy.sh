@@ -23,80 +23,68 @@ assert_contains() {
   fi
 }
 
-write_git_mock() {
-  local dirty_status="$1"
+write_command_mocks() {
   cat >"$BIN_DIR/git" <<EOF
 #!/usr/bin/env bash
-set -euo pipefail
 printf '%s\n' "\$*" >>"$LOG_DIR/git.log"
-case "\$1" in
-  status)
-    if [[ "\$2" == "--short" ]]; then
-      printf '%s' "$dirty_status"
-      exit 0
-    fi
-    ;;
-  rev-parse)
-    if [[ "\$2" == "--show-toplevel" ]]; then
-      printf '%s\n' "$ROOT_DIR"
-      exit 0
-    fi
-    if [[ "\$2" == "--abbrev-ref" && "\$3" == "HEAD" ]]; then
-      printf 'main\n'
-      exit 0
-    fi
-    ;;
-  config)
-    if [[ "\$2" == "--get" && "\$3" == "remote.origin.url" ]]; then
-      printf 'git@github.com:ediab/tfl.git\n'
-      exit 0
-    fi
-    ;;
-  push)
-    exit 0
-    ;;
-esac
-printf 'unexpected git invocation: %s\n' "\$*" >&2
-exit 1
+exit 0
 EOF
   chmod +x "$BIN_DIR/git"
-}
 
-cat >"$BIN_DIR/ssh" <<EOF
+  cat >"$BIN_DIR/ssh" <<EOF
 #!/usr/bin/env bash
-set -euo pipefail
 printf '%s\n' "\$*" >>"$LOG_DIR/ssh.log"
 cat >"$LOG_DIR/ssh-stdin.log"
+exit 0
 EOF
-chmod +x "$BIN_DIR/ssh"
+  chmod +x "$BIN_DIR/ssh"
+}
+
+assert_no_remote_commands() {
+  local found=0
+
+  if [[ -e "$LOG_DIR/git.log" ]]; then
+    cat "$LOG_DIR/git.log" >&2
+    found=1
+  fi
+  if [[ -e "$LOG_DIR/ssh.log" ]]; then
+    cat "$LOG_DIR/ssh.log" >&2
+    found=1
+  fi
+  if [[ "$found" -eq 1 ]]; then
+    printf 'deploy guard invoked git or ssh\n' >&2
+    return 1
+  fi
+}
 
 printf '1..2\n'
 
-write_git_mock " M README.md"
+write_command_mocks
 
 if output="$(PATH="$BIN_DIR:$PATH" "$SCRIPT_PATH" 2>&1)"; then
-  printf 'not ok 1 - refuses to deploy from a dirty worktree without override\n'
+  printf 'not ok 1 - refuses to deploy\n'
   printf '%s\n' "$output"
   exit 1
 else
-  assert_contains "$output" "working tree has uncommitted changes"
-  printf 'ok 1 - refuses to deploy from a dirty worktree without override\n'
+  assert_contains "$output" "permanently retired"
+  assert_no_remote_commands
+  printf 'ok 1 - refuses to deploy and explains the retirement\n'
 fi
 
-write_git_mock ""
-
-output="$(
+if output="$(
   PATH="$BIN_DIR:$PATH" \
   DEPLOY_REMOTE=example-vps \
   DEPLOY_APP_DIR=/srv/tfl \
   DEPLOY_SERVICE=tfl.service \
   DEPLOY_HOSTNAME=tfl.diab.io \
-  "$SCRIPT_PATH" --dry-run 2>&1
-)"
-
-assert_contains "$output" "git push origin main"
-assert_contains "$output" "ssh example-vps 'bash -s' <<'REMOTE'"
-assert_contains "$output" "npm ci"
-assert_contains "$output" "sudo systemctl restart tfl.service"
-assert_contains "$output" "curl -fsS -H 'Host: tfl.diab.io' http://127.0.0.1/"
-printf 'ok 2 - prints the expected deploy plan in dry-run mode\n'
+  "$SCRIPT_PATH" --dry-run --allow-dirty --branch main 2>&1
+)"; then
+  printf 'not ok 2 - refuses dry-run and dirty-tree overrides\n'
+  printf '%s\n' "$output"
+  exit 1
+else
+  assert_contains "$output" "no longer pushes to git"
+  assert_contains "$output" "--dry-run and --allow-dirty"
+  assert_no_remote_commands
+  printf 'ok 2 - refuses dry-run and dirty-tree overrides without touching remote tooling\n'
+fi

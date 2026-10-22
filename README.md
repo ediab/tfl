@@ -11,14 +11,16 @@ Open http://localhost:3000.
 
 ## Deploy
 
-Production releases are published by the protected native helper on the server
-(`/usr/local/sbin/tfl-deploy-inhibit` — fetch/ff `main`, export, build, seal, activate,
-health check, retention). Every push to `main` runs the **TFL native input checks** workflow;
-there is no deploy workflow (the legacy generic gate was removed — do not reintroduce a
-push-triggered deployment transport). Use the protected helper, not manual deploy scripts.
+Production runs on the homeserver in self-hosted Coolify, using the repository's
+Dockerfile and the `main` branch. Coolify auto-deploy is enabled: pushing to `main`
+triggers a build and release. The **TFL native input checks** GitHub workflow also
+runs on pushes, but is a check, not a second deployment writer.
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for the deploy pipeline, runtime isolation, the guard on the
-legacy manual path, and recovery.
+`npm run deploy` is a retired VPS command and now refuses all invocations without
+pushing or opening SSH connections. Do not use the old native helper instructions
+in [DEPLOYMENT.md](DEPLOYMENT.md); they describe a superseded deployment setup.
+Use Coolify's deployment history for release logs and rollback, and verify both
+container health and https://tfl.diab.io after a release.
 
 ## TfL API
 
